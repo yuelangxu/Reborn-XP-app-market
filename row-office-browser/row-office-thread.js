@@ -74,6 +74,8 @@
   function releaseLokFacade() {
     if (!lokDoc) return;
     try {
+      // LibLODocument_Impl owns a strong component reference and its upstream
+      // destructor disposes that component.  Keep exactly one lifetime owner.
       lokDoc.delete();
     } catch (error) {
       console.warn('[ROW] failed to release LOK facade', error);
@@ -90,20 +92,22 @@
   }
 
   function closeCurrent() {
+    if (lokDoc) {
+      // In LOK mode the facade is the document lifetime owner.  Its destructor
+      // unregisters callbacks and disposes the UNO component exactly once.
+      releaseLokFacade();
+      xModel = undefined;
+      return;
+    }
     if (xModel) {
       try {
         const closeable = xModel.queryInterface(zetajs.type.interface(css.util.XCloseable));
         if (closeable) xModel.close(false);
       } catch (_) {
-        // Closing is best effort during replacement. A later load/save failure
-        // is reported by the actual operation rather than hidden here.
+        // Best effort when no LOK facade exists.
       }
       xModel = undefined;
     }
-    // RowLokDocument owns a strong UNO reference. Releasing it only after the
-    // normal XCloseable path means its upstream destructor sees an already
-    // disposed component and follows LibreOffice's own tolerant cleanup path.
-    releaseLokFacade();
   }
 
   function newWriter() {
