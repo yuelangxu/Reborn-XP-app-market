@@ -46,11 +46,14 @@ s = replace_once(
     s,
     "gb_EMSCRIPTEN_LDFLAGS := $(gb_EMSCRIPTEN_CPPFLAGS)\n",
     "gb_EMSCRIPTEN_LDFLAGS := $(gb_EMSCRIPTEN_CPPFLAGS)\n\n"
-    "# unxgcc.mk inherits -pthread from libc++; a true ROW single-thread link must clear it.\n"
+    "# unxgcc.mk immediately bakes libc++'s -pthread into both compile and link flags.\n"
+    "# Strip every inherited copy before the Emscripten-specific flags are appended.\n"
     "ifeq ($(ENABLE_EMSCRIPTEN_SINGLE_THREAD),TRUE)\n"
     "gb_CXX_LINKFLAGS :=\n"
+    "gb_CXXFLAGS := $(filter-out -pthread,$(gb_CXXFLAGS))\n"
+    "gb_LinkTarget_CXXFLAGS := $(filter-out -pthread,$(gb_LinkTarget_CXXFLAGS))\n"
     "endif\n",
-    "platform cxx linker pthread",
+    "platform inherited cxx pthread",
 )
 s = replace_once(
     s,
@@ -219,7 +222,7 @@ s = replace_once(
 write(rel, s)
 
 # 6. JS UNO startup: a true single-thread build has no Emscripten pthread proxy
-# queue to dispatch work to.  We are already on the only runtime thread, so get
+# queue to dispatch work to. We are already on the only runtime thread, so get
 # the script URLs directly and resolve UNO/main locally with a loopback channel.
 rel = "desktop/source/app/initjsunoscripting.cxx"
 s = read(rel)
@@ -255,8 +258,8 @@ new = """void initJsUnoScripting() {
 s = replace_once(s, old, new, "single-thread UNO init")
 write(rel, s)
 
-# 7. SystemShellExecute: no pthread proxy exists in ROW mode.  Call the browser
-# hook on the current runtime thread.  The hook itself becomes Worker-safe and
+# 7. SystemShellExecute: no pthread proxy exists in ROW mode. Call the browser
+# hook on the current runtime thread. The hook itself becomes Worker-safe and
 # asks the parent UI to open external URLs when soffice runs in a DedicatedWorker.
 rel = "shell/source/unix/exec/shellexec.cxx"
 s = read(rel)
@@ -306,9 +309,9 @@ s = replace_once(
 write(rel, s)
 
 # 9. Headless VCL pulls Cairo into the final static Emscripten link, but the
-# pinned Cairo external only contributes FreeType headers.  Qt WASM builds do
+# pinned Cairo external only contributes FreeType headers. Qt WASM builds do
 # not expose this, while the headless static build leaves Cairo's FT_* symbols
-# unresolved.  Add the actual FreeType external to the same headless closure.
+# unresolved. Add the actual FreeType external to the same headless closure.
 rel = "vcl/Library_vcl.mk"
 s = read(rel)
 old = """# fontconfig depends on expat for static builds
@@ -337,7 +340,7 @@ report = {
     "shellExecute": "worker-safe-current-runtime",
     "maxConcurrencyEnv": 1,
     "headlessFreetypeLink": True,
-    "inheritedCxxPthreadLink": "disabled",
+    "inheritedCxxPthreadFlags": "compile-and-link-disabled",
 }
 (ROOT / "row-patch-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(report, indent=2))
