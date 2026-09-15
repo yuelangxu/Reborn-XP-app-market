@@ -168,6 +168,21 @@ jobs:
           bash harness/row-office-browser/run-acceptance.sh \
             lo-build/ROW-browser-runtime
 
+      - name: Build final Reborn XP package
+        if: ${{ success() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          rm -rf lo-build/ROW-release
+          mkdir -p lo-build/ROW-release
+          python3 harness/row-office-browser/build-reborn-package.py \
+            lo-build/ROW-browser-runtime lo-build/ROW-release \
+            --source-sha "${GITHUB_SHA}" --accepted
+          python3 harness/row-office-browser/canonicalize-reborn-zip.py \
+            lo-build/ROW-release/RebornOfficeWasm-browser-native.zip
+          sha256sum lo-build/ROW-release/RebornOfficeWasm-browser-native.zip \
+            > lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256
+          cat lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256
+
       - name: Show first failure signals
         if: always()
         run: |
@@ -181,6 +196,8 @@ jobs:
           cat lo-build/soffice-inspection.json 2>/dev/null || true
           echo '--- browser acceptance ---'
           cat lo-build/ROW-browser-runtime/row-acceptance-dom.txt 2>/dev/null || true
+          echo '--- final release ---'
+          cat lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256 2>/dev/null || true
           echo '--- tail ---'
           tail -n 250 lo-build/row-build.log 2>/dev/null || true
           echo '--- ccache ---'
@@ -208,6 +225,17 @@ jobs:
             lo-build/ROW-runtime-manifest.sha256
             lo-build/ROW-runtime/**
             lo-build/ROW-browser-runtime/**
+
+      - name: Upload accepted Reborn Office release
+        if: ${{ success() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: RebornOfficeWasm-browser-native
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            lo-build/ROW-release/RebornOfficeWasm-browser-native.zip
+            lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256
 
       - name: Preserve failure state
         if: steps.build.outcome == 'failure'
