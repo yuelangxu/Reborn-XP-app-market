@@ -6,6 +6,7 @@ if [ "$#" -ne 1 ]; then
   exit 64
 fi
 
+mkdir -p "$1"
 BUILD=$(cd "$1" && pwd)
 FONT_DIR="$BUILD/instdir/share/fonts/truetype"
 FONT="$FONT_DIR/NotoSansCJK-Regular.ttc"
