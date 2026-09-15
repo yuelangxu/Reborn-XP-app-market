@@ -3,11 +3,12 @@ name: Reborn Office browser bridge smoke
 on:
   workflow_dispatch:
   push:
-    branches: [row-office-core-port]
+    branches: [row-office-core-port, row-office-core-port-prep]
     paths:
       - '.github/workflows/row-office-browser-smoke.yml'
       - 'row-office-browser/**'
       - 'row-office-lok/**'
+      - 'row-office-port/**'
 
 permissions:
   contents: read
@@ -18,10 +19,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: row-office-core-port
+          ref: ${{ github.ref_name }}
 
       - name: Script syntax
         run: |
+          set -euo pipefail
           node --check row-office-browser/row-office-client.js
           node --check row-office-browser/row-office-worker-loader.js
           node --check row-office-browser/row-office-thread.js
@@ -29,14 +31,16 @@ jobs:
           node --check row-office-browser/reborn-office.js
           bash -n row-office-browser/prepare-runtime-tree.sh
           bash -n row-office-lok/prepare_cjk_font.sh
+          bash -n row-office-port/build.sh
           python3 -m py_compile row-office-lok/integrate_bridge.py
           python3 -m py_compile row-office-lok/integrate_cjk_font.py
+          python3 -m py_compile row-office-browser/build-reborn-package.py
 
-      - name: Exercise gbuild transforms
+      - name: Exercise gbuild and UNO script transforms
         run: |
           set -euo pipefail
           tmp=$(mktemp -d)
-          mkdir -p "$tmp/static/source/unoembindhelpers"
+          mkdir -p "$tmp/static/source/unoembindhelpers" "$tmp/desktop/source/app"
           cat > "$tmp/static/StaticLibrary_unoembind.mk" <<'EOF'
           $(eval $(call gb_StaticLibrary_StaticLibrary,unoembind))
 
@@ -48,6 +52,19 @@ jobs:
           gb_emscripten_fs_image_files := \
               $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/fc_local.conf \
               $(INSTROOT)/$(LIBO_SHARE_FOLDER)/gallery/fontwork.sdg \
+          EOF
+          cat > "$tmp/desktop/source/app/initjsunoscripting.cxx" <<'EOF'
+          #if HAVE_EMSCRIPTEN_PROXY_TO_PTHREAD
+          EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
+              globalThis.Module = globalThis.Module || Module;
+              importScripts.apply(self, Emval.toValue(handle));
+          });
+          #else
+          EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
+              const urls = Emval.toValue(handle);
+              function step() {}
+          });
+          #endif
           EOF
           python3 row-office-lok/integrate_bridge.py "$tmp"
           python3 row-office-lok/integrate_cjk_font.py "$tmp"
@@ -63,8 +80,13 @@ jobs:
           assert 'RowLokDocument' in bridge.read_text()
           fs = (root / 'static/CustomTarget_emscripten_fs_image.mk').read_text()
           assert 'fonts/truetype/NotoSansCJK-Regular.ttc \\\n' in fs
+          uno = (root / 'desktop/source/app/initjsunoscripting.cxx').read_text()
+          assert '#elif defined ROW_EMSCRIPTEN_SINGLE_THREAD' in uno
+          assert uno.count('#elif defined ROW_EMSCRIPTEN_SINGLE_THREAD') == 1
+          assert 'importScripts.apply(self, Emval.toValue(handle))' in uno
           print(text)
           print(fs)
+          print(uno)
           PY
 
       - name: Single-thread architecture guards
@@ -83,6 +105,54 @@ jobs:
           grep -q "rowLokProcessEventsToIdle" row-office-lok/row_lok_bridge.cxx
           grep -q "a2033f163659aeab49c4d54aac59fe770ad05552" row-office-lok/prepare_cjk_font.sh
           grep -q "NotoSansCJK-Regular.ttc" row-office-lok/integrate_cjk_font.py
+
+      - name: Exercise deterministic Reborn package contract
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          runtime="$tmp/runtime-tree"
+          mkdir -p "$runtime/runtime" "$runtime/vendor" "$tmp/out"
+          printf 'mock-js\n' > "$runtime/runtime/soffice.js"
+          printf '\0asm-mock\n' > "$runtime/runtime/soffice.wasm"
+          printf 'mock-data\n' > "$runtime/runtime/soffice.data"
+          printf '{}\n' > "$runtime/runtime/soffice.data.js.metadata"
+          cp row-office-browser/vendor/zeta.js "$runtime/vendor/zeta.js"
+          cp row-office-browser/row-office-client.js "$runtime/"
+          cp row-office-browser/row-office-view.js "$runtime/"
+          cp row-office-browser/row-office-worker-loader.js "$runtime/"
+          cp row-office-browser/row-office-thread.js "$runtime/"
+          cp row-office-browser/reborn-office.js "$runtime/"
+          python3 row-office-browser/build-reborn-package.py \
+            "$runtime" "$tmp/out" --source-sha smoke --accepted
+          python3 - "$tmp/out/RebornOfficeWasm-browser-native.zip" <<'PY'
+          import hashlib, json, sys, zipfile
+          from pathlib import PurePosixPath
+          path = sys.argv[1]
+          with zipfile.ZipFile(path) as zf:
+              names = zf.namelist()
+              assert names[0] == 'RebornOfficeWasm/'
+              seen = set()
+              for name in names:
+                  p = PurePosixPath(name.rstrip('/'))
+                  parent = str(p.parent)
+                  if name.endswith('/'):
+                      if parent not in ('.', ''):
+                          assert parent + '/' in seen, (parent, name)
+                      seen.add(name)
+                  elif parent not in ('.', ''):
+                      assert parent + '/' in seen, (parent, name)
+              launcher = json.loads(zf.read('RebornOfficeWasm/RebornOfficeWasm.exe'))
+              assert 'apps.load' not in launcher['action']
+              assert 'registerApp' in launcher['action']
+              assert "C:/Program Files/RebornOfficeWasm" in launcher['action']
+              manifest = json.loads(zf.read('RebornOfficeWasm/IMPORT-MANIFEST.json'))
+              assert manifest['fileCount'] > 10
+              release = json.loads(zf.read('RebornOfficeWasm/release.json'))
+              assert release['browserAcceptancePassed'] is True
+              assert release['sharedMemoryRequired'] is False
+              assert zf.testzip() is None
+          print('package sha256', hashlib.sha256(open(path, 'rb').read()).hexdigest())
+          PY
 
       - name: Describe bridge footprint
         run: |
