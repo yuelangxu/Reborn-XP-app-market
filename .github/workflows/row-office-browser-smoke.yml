@@ -30,6 +30,32 @@ jobs:
           bash -n row-office-browser/prepare-runtime-tree.sh
           python3 -m py_compile row-office-lok/integrate_bridge.py
 
+      - name: Exercise LOK gbuild transform
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          mkdir -p "$tmp/static/source/unoembindhelpers"
+          cat > "$tmp/static/StaticLibrary_unoembind.mk" <<'EOF'
+          $(eval $(call gb_StaticLibrary_StaticLibrary,unoembind))
+
+          $(eval $(call gb_StaticLibrary_add_exception_objects,unoembind, \
+              static/source/unoembindhelpers/PrimaryBindings \
+          ))
+          EOF
+          python3 row-office-lok/integrate_bridge.py "$tmp"
+          python3 - "$tmp" <<'PY'
+          from pathlib import Path
+          import sys
+          root = Path(sys.argv[1])
+          text = (root / 'static/StaticLibrary_unoembind.mk').read_text()
+          assert '-I$(SRCDIR)/desktop/inc \\\n' in text
+          assert 'static/source/unoembindhelpers/RowLokBridge \\\n' in text
+          bridge = root / 'static/source/unoembindhelpers/RowLokBridge.cxx'
+          assert bridge.is_file()
+          assert 'RowLokDocument' in bridge.read_text()
+          print(text)
+          PY
+
       - name: Single-thread architecture guards
         run: |
           set -euo pipefail
