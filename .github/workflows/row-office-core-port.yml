@@ -39,21 +39,21 @@ jobs:
         uses: actions/cache@v4
         with:
           path: row-python
-          key: row-python-3.12.11-allotropia-wasm-v2
+          key: row-python-3.12.13-allotropia-wasm-v1
 
-      - name: Download CPython source
+      - name: Download verified CPython source
         if: ${{ !hashFiles('row-python/bin/python3') }}
         run: |
           curl --fail --location --retry 3 \
-            https://www.python.org/ftp/python/3.12.11/Python-3.12.11.tgz \
-            -o Python-3.12.11.tgz
-          echo '6735b2733f451ccca9c54d8a8a2010bd3a8655f5e18ca6a51d4afdfc5d054a84  Python-3.12.11.tgz' | sha256sum -c -
+            https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz \
+            -o Python-3.12.13.tgz
+          echo '0816c4761c97ecdb3f50a3924de0a93fd78cb63ee8e6c04201ddfaedca500b0b  Python-3.12.13.tgz' | sha256sum -c -
 
       - name: Build Python inside the WASM builder
         if: ${{ !hashFiles('row-python/bin/python3') }}
         env:
           PREFIX: ${{ github.workspace }}/row-python
-          SOURCE_ARCHIVE: ${{ github.workspace }}/Python-3.12.11.tgz
+          SOURCE_ARCHIVE: ${{ github.workspace }}/Python-3.12.13.tgz
         run: bash harness/row-office-port/bootstrap_python.sh
 
       - name: Probe builder Python
