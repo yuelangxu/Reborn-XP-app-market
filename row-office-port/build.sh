@@ -28,6 +28,120 @@ cat > "$BUILD/autogen.input" <<EOF
 --with-build-platform-configure-options=--disable-ccache
 EOF
 
+# Keep the container payload in a real script file.  The previous inline
+# single-quoted bash -lc payload was fragile: one apostrophe in a comment was
+# enough to terminate the host shell string before Docker ever reached Meson.
+cat > "$BUILD/row-container-build.sh" <<'ROW_CONTAINER_SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+set -o pipefail
+source /home/builder/emsdk/emsdk_env.sh
+cd /build
+: > row-build.log
+log() { printf '%s\n' "$*" | tee -a row-build.log; }
+
+log "[ROW] native compiler probe"
+command -v clang | tee -a row-build.log
+clang --version | head -n 3 | tee -a row-build.log
+command -v emcc | tee -a row-build.log
+emcc --version | head -n 3 | tee -a row-build.log
+
+if [ -n "${ROW_PYTHON:-}" ]; then
+  export PATH=/opt/row-python/bin:$PATH
+  export LD_LIBRARY_PATH=/opt/row-python/lib:${LD_LIBRARY_PATH:-}
+  export PYTHON_FOR_BUILD="$ROW_PYTHON"
+  export PYTHON="$ROW_PYTHON"
+
+  log "[ROW] mounted Python probe"
+  "$ROW_PYTHON" --version 2>&1 | tee -a row-build.log
+  "$ROW_PYTHON" - <<'PY' 2>&1 | tee -a row-build.log
+import json, os, sys
+print(json.dumps({
+    "executable": sys.executable,
+    "version": sys.version,
+    "prefix": sys.prefix,
+    "path": sys.path,
+}, indent=2))
+PY
+
+  log "[ROW] system Meson executable probe"
+  if command -v meson >/dev/null 2>&1; then
+    command -v meson | tee -a row-build.log
+    meson --version 2>&1 | tee -a row-build.log || true
+    head -n 1 "$(command -v meson)" 2>/dev/null | tee -a row-build.log || true
+  else
+    log "[ROW] system meson command not found"
+  fi
+
+  log "[ROW] discover mesonbuild package without importing it"
+  MESON_INIT=""
+  for root in \
+      /usr/lib/python3/dist-packages \
+      /usr/local/lib/python3/dist-packages \
+      /usr/local/lib/python3/site-packages \
+      /usr/lib/python3/site-packages; do
+    if [ -f "$root/mesonbuild/__init__.py" ]; then
+      MESON_INIT="$root/mesonbuild/__init__.py"
+      break
+    fi
+  done
+  if [ -z "$MESON_INIT" ]; then
+    MESON_INIT=$(find /usr/lib /usr/local/lib \
+      -maxdepth 6 -type f -path '*/mesonbuild/__init__.py' \
+      -print -quit 2>/dev/null || true)
+  fi
+  if [ -z "$MESON_INIT" ]; then
+    log "[ROW] ERROR: mesonbuild package was not found in the builder image"
+    exit 86
+  fi
+  MESON_SITE=${MESON_INIT%/mesonbuild/__init__.py}
+  export PYTHONPATH="$MESON_SITE${PYTHONPATH:+:$PYTHONPATH}"
+  log "[ROW] Meson package: $MESON_INIT"
+  log "[ROW] Meson site root: $MESON_SITE"
+
+  log "[ROW] mounted Python imports mesonbuild"
+  "$ROW_PYTHON" - <<'PY' 2>&1 | tee -a row-build.log
+import json, mesonbuild, pathlib, sys
+print(json.dumps({
+    "python": sys.executable,
+    "mesonbuild": str(pathlib.Path(mesonbuild.__file__).resolve()),
+}, indent=2))
+PY
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 0 ]; then
+    log "[ROW] ERROR: mounted Python cannot import discovered mesonbuild package"
+    exit "$rc"
+  fi
+
+  MESON_BIN=$(command -v meson || true)
+  if [ -z "$MESON_BIN" ]; then
+    MESON_BIN=/usr/bin/meson
+  fi
+  log "[ROW] mounted Python executes Meson: $MESON_BIN"
+  "$ROW_PYTHON" "$MESON_BIN" --version 2>&1 | tee -a row-build.log
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 0 ]; then
+    log "[ROW] ERROR: mounted Python failed to execute Meson"
+    exit "$rc"
+  fi
+fi
+
+log "[ROW] configure"
+CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE /src/autogen.sh 2>&1 | tee -a row-build.log
+rc=${PIPESTATUS[0]}
+if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+
+log "[ROW] fetch external tarballs"
+CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make fetch -j2 2>&1 | tee -a row-build.log
+rc=${PIPESTATUS[0]}
+if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+
+log "[ROW] full headless Writer build"
+CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make -rj2 2>&1 | tee -a row-build.log
+exit ${PIPESTATUS[0]}
+ROW_CONTAINER_SCRIPT
+chmod +x "$BUILD/row-container-build.sh"
+
 docker pull "$IMAGE"
 PYMOUNT=()
 PYENV=()
@@ -35,6 +149,7 @@ if [ -n "$HOST_PYTHON" ] && [ -x "$HOST_PYTHON/bin/python3" ]; then
   PYMOUNT=(-v "$HOST_PYTHON:/opt/row-python:ro")
   PYENV=(-e ROW_PYTHON=/opt/row-python/bin/python3)
 fi
+
 set +e
 docker run --rm \
   -v "$SRC:/src:rw" \
@@ -43,51 +158,10 @@ docker run --rm \
   "${PYMOUNT[@]}" \
   -e ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE \
   "${PYENV[@]}" \
-  "$IMAGE" /bin/bash -lc '
-    set -o pipefail
-    source /home/builder/emsdk/emsdk_env.sh
-    cd /build
-    echo "[ROW] native compiler probe" | tee row-build.log
-    command -v clang | tee -a row-build.log
-    clang --version | head -n 3 | tee -a row-build.log
-    if [ -n "${ROW_PYTHON:-}" ]; then
-      # LibreOffice drives Meson as "$PYTHON $MESON".  The builder image ships
-      # Meson in the system Python dist-packages, while our mounted Python 3.12
-      # deliberately has an isolated prefix.  Bridge only the pure-Python Meson
-      # package path into the mounted interpreter instead of falling back to the
-      # builder's older Python runtime.
-      MESON_SITE=$(/usr/bin/python3 - <<"PY"
-import pathlib
-import mesonbuild
-print(pathlib.Path(mesonbuild.__file__).resolve().parent.parent)
-PY
-      )
-      export PYTHONPATH="$MESON_SITE${PYTHONPATH:+:$PYTHONPATH}"
-      export PATH=/opt/row-python/bin:$PATH
-      export LD_LIBRARY_PATH=/opt/row-python/lib:${LD_LIBRARY_PATH:-}
-      export PYTHON_FOR_BUILD="$ROW_PYTHON"
-      export PYTHON="$ROW_PYTHON"
-      echo "[ROW] mounted Python probe" | tee -a row-build.log
-      "$ROW_PYTHON" --version 2>&1 | tee -a row-build.log
-      echo "[ROW] Meson bridge probe: $MESON_SITE" | tee -a row-build.log
-      "$ROW_PYTHON" /usr/bin/meson --version 2>&1 | tee -a row-build.log
-      rc=${PIPESTATUS[0]}
-      if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-    fi
-    echo "[ROW] configure" | tee -a row-build.log
-    CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE /src/autogen.sh 2>&1 | tee -a row-build.log
-    rc=${PIPESTATUS[0]}
-    if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-    echo "[ROW] fetch external tarballs" | tee -a row-build.log
-    CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make fetch -j2 2>&1 | tee -a row-build.log
-    rc=${PIPESTATUS[0]}
-    if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-    echo "[ROW] full headless Writer build" | tee -a row-build.log
-    CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make -rj2 2>&1 | tee -a row-build.log
-    exit ${PIPESTATUS[0]}
-  '
+  "$IMAGE" /bin/bash /build/row-container-build.sh
 rc=$?
 set -e
+
 python3 "$PORT/classify.py" "$BUILD/row-build.log" > "$BUILD/row-build-summary.json" || true
 find "$BUILD" \( -name 'soffice.wasm' -o -name 'soffice.js' -o -name 'soffice.data' -o -name 'soffice.data.js.metadata' \) -print | sort > "$BUILD/runtime-files.txt" || true
 WASM=$(find "$BUILD" -name soffice.wasm -print -quit || true)
