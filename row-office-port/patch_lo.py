@@ -44,6 +44,16 @@ s = replace_once(
 )
 s = replace_once(
     s,
+    "gb_EMSCRIPTEN_LDFLAGS := $(gb_EMSCRIPTEN_CPPFLAGS)\n",
+    "gb_EMSCRIPTEN_LDFLAGS := $(gb_EMSCRIPTEN_CPPFLAGS)\n\n"
+    "# unxgcc.mk inherits -pthread from libc++; a true ROW single-thread link must clear it.\n"
+    "ifeq ($(ENABLE_EMSCRIPTEN_SINGLE_THREAD),TRUE)\n"
+    "gb_CXX_LINKFLAGS :=\n"
+    "endif\n",
+    "platform cxx linker pthread",
+)
+s = replace_once(
+    s,
     "ifeq ($(ENABLE_EMSCRIPTEN_PROXY_TO_PTHREAD),)\ngb_EMSCRIPTEN_LDFLAGS += -sPTHREAD_POOL_SIZE=7\nendif\n\n# Double the main thread stack size, but keep the default value for other threads:\ngb_EMSCRIPTEN_LDFLAGS += -sSTACK_SIZE=131072 -sDEFAULT_PTHREAD_STACK_SIZE=65536\n",
     "ifeq ($(ENABLE_EMSCRIPTEN_SINGLE_THREAD),)\n"
     "ifeq ($(ENABLE_EMSCRIPTEN_PROXY_TO_PTHREAD),)\n"
@@ -327,6 +337,7 @@ report = {
     "shellExecute": "worker-safe-current-runtime",
     "maxConcurrencyEnv": 1,
     "headlessFreetypeLink": True,
+    "inheritedCxxPthreadLink": "disabled",
 }
 (ROOT / "row-patch-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(report, indent=2))
