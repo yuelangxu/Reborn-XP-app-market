@@ -51,12 +51,28 @@ docker run --rm \
     command -v clang | tee -a row-build.log
     clang --version | head -n 3 | tee -a row-build.log
     if [ -n "${ROW_PYTHON:-}" ]; then
+      # LibreOffice drives Meson as "$PYTHON $MESON".  The builder image ships
+      # Meson in the system Python dist-packages, while our mounted Python 3.12
+      # deliberately has an isolated prefix.  Bridge only the pure-Python Meson
+      # package path into the mounted interpreter instead of falling back to the
+      # builder's older Python runtime.
+      MESON_SITE=$(/usr/bin/python3 - <<"PY"
+import pathlib
+import mesonbuild
+print(pathlib.Path(mesonbuild.__file__).resolve().parent.parent)
+PY
+      )
+      export PYTHONPATH="$MESON_SITE${PYTHONPATH:+:$PYTHONPATH}"
       export PATH=/opt/row-python/bin:$PATH
       export LD_LIBRARY_PATH=/opt/row-python/lib:${LD_LIBRARY_PATH:-}
       export PYTHON_FOR_BUILD="$ROW_PYTHON"
       export PYTHON="$ROW_PYTHON"
       echo "[ROW] mounted Python probe" | tee -a row-build.log
       "$ROW_PYTHON" --version 2>&1 | tee -a row-build.log
+      echo "[ROW] Meson bridge probe: $MESON_SITE" | tee -a row-build.log
+      "$ROW_PYTHON" /usr/bin/meson --version 2>&1 | tee -a row-build.log
+      rc=${PIPESTATUS[0]}
+      if [ "$rc" -ne 0 ]; then exit "$rc"; fi
     fi
     echo "[ROW] configure" | tee -a row-build.log
     CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE /src/autogen.sh 2>&1 | tee -a row-build.log
