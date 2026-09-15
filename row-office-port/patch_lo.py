@@ -185,9 +185,9 @@ s = s[:a] + stub + s[b:]
 write(rel, s)
 
 # 5. Backport the upstream headless SalInstance DoExecute signature fix.
-# The pinned core has the new SalInstance::DoExecute() pure virtual, but its
-# headless SvpSalInstance declaration/definition still take an obsolete exit-code
-# reference. Current upstream fixes exactly these two signatures.
+# The pinned core has SalInstance::DoExecute() already, but SvpSalInstance still
+# uses the obsolete int& signature. Current upstream changes exactly these two
+# signatures, with no body change.
 rel = "vcl/inc/headless/svpinst.hxx"
 s = read(rel)
 s = replace_once(
@@ -202,8 +202,8 @@ rel = "vcl/headless/svpinst.cxx"
 s = read(rel)
 s = replace_once(
     s,
-    "bool SvpSalInstance::DoExecute(int &)\n",
-    "bool SvpSalInstance::DoExecute()\n",
+    "bool SvpSalInstance::DoExecute(int &) {\n",
+    "bool SvpSalInstance::DoExecute() {\n",
     "svpinst definition",
 )
 write(rel, s)
