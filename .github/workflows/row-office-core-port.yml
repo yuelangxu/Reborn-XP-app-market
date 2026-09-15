@@ -7,9 +7,15 @@ on:
     paths:
       - '.github/workflows/row-office-core-port.yml'
       - 'row-office-port/**'
+      - 'row-office-lok/**'
+      - 'row-office-browser/**'
 
 permissions:
   contents: read
+
+concurrency:
+  group: row-office-core-port-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-writer-wasm:
