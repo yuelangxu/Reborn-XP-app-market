@@ -29,19 +29,43 @@ cat > "$BUILD/autogen.input" <<EOF
 --with-build-platform-configure-options=--disable-ccache
 EOF
 
-# Keep the container payload in a real script file.  The previous inline
+# Keep the container payload in a real script file. The previous inline
 # single-quoted bash -lc payload was fragile: one apostrophe in a comment was
 # enough to terminate the host shell string before Docker ever reached Meson.
 cat > "$BUILD/row-container-build.sh" <<'ROW_CONTAINER_SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 set -o pipefail
-source /home/builder/emsdk/emsdk_env.sh
 cd /build
 : > row-build.log
 log() { printf '%s\n' "$*" | tee -a row-build.log; }
 
-# Diagnostics must never abort a build.  In particular, piping a version
+# The Allotropia builder currently contains Emscripten source with a .git entry
+# whose referenced repository metadata is unavailable in the published image.
+# Emscripten 3.x sees that .git entry and unconditionally runs
+# `git rev-parse HEAD` while identifying the compiler. That makes even
+# `emcc --version` fail, and Meson consequently reports "Unknown compiler".
+# Packaged Emscripten explicitly supports running without .git and falls back
+# to its packaged revision/version file, so quarantine only demonstrably broken
+# metadata. Do not touch a valid checkout.
+EMSCRIPTEN_ROOT=/home/builder/emsdk/emscripten/main
+if [ -e "$EMSCRIPTEN_ROOT/.git" ]; then
+  if git -C "$EMSCRIPTEN_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    em_git_head=$(git -C "$EMSCRIPTEN_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+    log "[ROW] Emscripten git metadata valid: ${em_git_head:-unknown}"
+  else
+    quarantine="$EMSCRIPTEN_ROOT/.git.row-invalid"
+    rm -rf "$quarantine"
+    mv "$EMSCRIPTEN_ROOT/.git" "$quarantine"
+    log "[ROW] quarantined broken Emscripten .git metadata"
+  fi
+else
+  log "[ROW] Emscripten is already in packaged no-.git form"
+fi
+
+source /home/builder/emsdk/emsdk_env.sh
+
+# Diagnostics must never abort a build. In particular, piping a version
 # command through head while pipefail is active can turn an innocent SIGPIPE
 # into a fatal probe failure.
 log "[ROW] native compiler probe"
