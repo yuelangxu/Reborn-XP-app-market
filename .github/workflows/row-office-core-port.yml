@@ -95,7 +95,11 @@ jobs:
           PORT: ${{ github.workspace }}/harness/row-office-port
           HOST_PYTHON: ${{ github.workspace }}/row-python
           ROW_CCACHE_DIR: ${{ github.workspace }}/row-ccache
-        run: bash harness/row-office-port/build.sh
+        run: |
+          python3 harness/row-office-lok/integrate_bridge.py "$SRC"
+          python3 harness/row-office-lok/integrate_cjk_font.py "$SRC"
+          bash harness/row-office-lok/prepare_cjk_font.sh "$BUILD"
+          bash harness/row-office-port/build.sh
 
       - name: Save LibreOffice ccache
         if: always()
@@ -132,6 +136,32 @@ jobs:
           find lo-build/ROW-runtime -type f -print | sort
           cat lo-build/ROW-runtime-manifest.sha256 || true
 
+      - name: Browser-native Writer acceptance
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          runtime_dir=''
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            if [ -f "$candidate/soffice.js" ] \
+              && [ -f "$candidate/soffice.wasm" ] \
+              && [ -f "$candidate/soffice.data" ] \
+              && [ -f "$candidate/soffice.data.js.metadata" ]; then
+              runtime_dir="$candidate"
+              break
+            fi
+          done < <(find lo-build -name soffice.wasm -printf '%h\n' | sort -u)
+          if [ -z "$runtime_dir" ]; then
+            echo 'No complete sibling LibreOffice browser runtime was found' >&2
+            cat lo-build/runtime-files.txt >&2 || true
+            exit 72
+          fi
+          echo "ROW complete runtime: $runtime_dir"
+          bash harness/row-office-browser/prepare-runtime-tree.sh \
+            "$runtime_dir" lo-build/ROW-browser-runtime
+          bash harness/row-office-browser/run-acceptance.sh \
+            lo-build/ROW-browser-runtime
+
       - name: Show first failure signals
         if: always()
         run: |
@@ -143,6 +173,8 @@ jobs:
           cat lo-build/runtime-files.txt 2>/dev/null || true
           echo '--- soffice inspection ---'
           cat lo-build/soffice-inspection.json 2>/dev/null || true
+          echo '--- browser acceptance ---'
+          cat lo-build/ROW-browser-runtime/row-acceptance-dom.txt 2>/dev/null || true
           echo '--- tail ---'
           tail -n 250 lo-build/row-build.log 2>/dev/null || true
           echo '--- ccache ---'
@@ -169,6 +201,7 @@ jobs:
             lo-build/ROW-soffice.wasm
             lo-build/ROW-runtime-manifest.sha256
             lo-build/ROW-runtime/**
+            lo-build/ROW-browser-runtime/**
 
       - name: Preserve failure state
         if: steps.build.outcome == 'failure'
