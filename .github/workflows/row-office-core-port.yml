@@ -194,6 +194,12 @@ jobs:
           cat lo-build/runtime-files.txt 2>/dev/null || true
           echo '--- soffice inspection ---'
           cat lo-build/soffice-inspection.json 2>/dev/null || true
+          echo '--- soffice link externals ---'
+          cat lo-build/workdir/LinkTarget/Executable/soffice.js.d.externals 2>/dev/null || true
+          echo '--- soffice link libraries ---'
+          cat lo-build/workdir/LinkTarget/Executable/soffice.js.d.libraries 2>/dev/null || true
+          echo '--- soffice link statics ---'
+          cat lo-build/workdir/LinkTarget/Executable/soffice.js.d.statics 2>/dev/null || true
           echo '--- browser acceptance ---'
           cat lo-build/ROW-browser-runtime/row-acceptance-dom.txt 2>/dev/null || true
           echo '--- final release ---'
@@ -222,6 +228,9 @@ jobs:
             lo-build/runtime-files.txt
             lo-build/soffice-inspection.json
             lo-build/ROW-soffice.wasm
+            lo-build/workdir/LinkTarget/Executable/soffice.js.d.externals
+            lo-build/workdir/LinkTarget/Executable/soffice.js.d.libraries
+            lo-build/workdir/LinkTarget/Executable/soffice.js.d.statics
             lo-build/ROW-runtime-manifest.sha256
             lo-build/ROW-runtime/**
             lo-build/ROW-browser-runtime/**
