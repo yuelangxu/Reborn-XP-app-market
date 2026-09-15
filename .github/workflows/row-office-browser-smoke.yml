@@ -21,6 +21,14 @@ jobs:
         with:
           ref: ${{ github.ref_name }}
 
+      - name: Checkout pinned LibreOffice source for transform smoke
+        uses: actions/checkout@v4
+        with:
+          repository: LibreOffice/core
+          ref: 31eabe1e534a70a2b7d5c39eb31e56a75c17be3b
+          path: lo-transform-smoke
+          fetch-depth: 1
+
       - name: Script syntax
         run: |
           set -euo pipefail
@@ -34,6 +42,7 @@ jobs:
           bash -n row-office-port/build.sh
           python3 -m py_compile row-office-lok/integrate_bridge.py
           python3 -m py_compile row-office-lok/integrate_cjk_font.py
+          python3 -m py_compile row-office-port/patch_lo.py
           python3 -m py_compile row-office-browser/build-reborn-package-v2.py
           python3 -m py_compile row-office-browser/canonicalize-reborn-zip.py
 
@@ -89,6 +98,26 @@ jobs:
           print(fs)
           print(uno)
           PY
+
+      - name: Exercise exact pinned LibreOffice transform stack
+        run: |
+          set -euo pipefail
+          python3 row-office-lok/integrate_bridge.py lo-transform-smoke
+          python3 row-office-lok/integrate_cjk_font.py lo-transform-smoke
+          python3 row-office-port/patch_lo.py lo-transform-smoke
+          git -C lo-transform-smoke diff --check
+          test "$(git -C lo-transform-smoke rev-parse HEAD)" = "31eabe1e534a70a2b7d5c39eb31e56a75c17be3b"
+          grep -q 'ROW_EMSCRIPTEN_SINGLE_THREAD' lo-transform-smoke/solenv/gbuild/platform/EMSCRIPTEN_INTEL_GCC.mk
+          grep -q '#elif defined ROW_EMSCRIPTEN_SINGLE_THREAD' lo-transform-smoke/desktop/source/app/initjsunoscripting.cxx
+          grep -q 'importScripts.apply(self, Emval.toValue(handle))' lo-transform-smoke/desktop/source/app/initjsunoscripting.cxx
+          grep -q 'static/source/unoembindhelpers/RowLokBridge' lo-transform-smoke/static/StaticLibrary_unoembind.mk
+          grep -q 'NotoSansCJK-Regular.ttc' lo-transform-smoke/static/CustomTarget_emscripten_fs_image.mk
+          grep -q 'threadPoolExecution' lo-transform-smoke/row-patch-report.json
+          grep -q 'synchronous-inline' lo-transform-smoke/row-patch-report.json
+          echo '--- exact-source diff stat ---'
+          git -C lo-transform-smoke diff --stat
+          echo '--- exact-source patch report ---'
+          cat lo-transform-smoke/row-patch-report.json
 
       - name: Single-thread architecture guards
         run: |
