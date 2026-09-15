@@ -35,6 +35,17 @@ jobs:
           path: libreoffice
           fetch-depth: 1
 
+      - name: Provide Python 3.12 for BUILD-side tools
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Probe host Python bundle
+        run: |
+          echo "pythonLocation=$pythonLocation"
+          "$pythonLocation/bin/python3" --version
+          ldd "$pythonLocation/bin/python3" || true
+
       - name: Build no-pthread headless Writer
         id: build
         continue-on-error: true
@@ -43,6 +54,7 @@ jobs:
           BUILD: ${{ github.workspace }}/lo-build
           TARBALLS: ${{ github.workspace }}/lo-tarballs
           PORT: ${{ github.workspace }}/harness/row-office-port
+          HOST_PYTHON: ${{ env.pythonLocation }}
         run: bash harness/row-office-port/build.sh
 
       - name: Show first failure signals
@@ -68,6 +80,7 @@ jobs:
             libreoffice/row-patch-report.json
             libreoffice/config.log
             lo-build/config.log
+            lo-build/CONF-FOR-BUILD/config.log
             lo-build/row-build.log
             lo-build/row-build-summary.json
             lo-build/runtime-files.txt
