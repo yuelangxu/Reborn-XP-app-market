@@ -174,11 +174,9 @@ jobs:
           set -euo pipefail
           rm -rf lo-build/ROW-release
           mkdir -p lo-build/ROW-release
-          python3 harness/row-office-browser/build-reborn-package.py \
+          python3 harness/row-office-browser/build-reborn-package-v2.py \
             lo-build/ROW-browser-runtime lo-build/ROW-release \
             --source-sha "${GITHUB_SHA}" --accepted
-          python3 harness/row-office-browser/canonicalize-reborn-zip.py \
-            lo-build/ROW-release/RebornOfficeWasm-browser-native.zip
           sha256sum lo-build/ROW-release/RebornOfficeWasm-browser-native.zip \
             > lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256
           cat lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256
