@@ -24,6 +24,7 @@
 #include <comphelper/lok.hxx>
 #include <lib/init.hxx>
 #include <sfx2/viewsh.hxx>
+#include <vcl/scheduler.hxx>
 
 namespace
 {
@@ -216,11 +217,17 @@ void rowLokSetActive(bool active)
 {
     comphelper::LibreOfficeKit::setActive(active);
 }
+
+void rowLokProcessEventsToIdle()
+{
+    Scheduler::ProcessEventsToIdle();
+}
 }
 
 EMSCRIPTEN_BINDINGS(row_lok_bridge)
 {
     emscripten::function("rowLokSetActive", &rowLokSetActive);
+    emscripten::function("rowLokProcessEventsToIdle", &rowLokProcessEventsToIdle);
 
     emscripten::class_<RowLokDocument>("RowLokDocument")
         .constructor<>()
