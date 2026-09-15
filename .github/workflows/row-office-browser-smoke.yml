@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/row-office-browser-smoke.yml'
       - 'row-office-browser/**'
+      - 'row-office-lok/**'
 
 permissions:
   contents: read
@@ -19,13 +20,15 @@ jobs:
         with:
           ref: row-office-core-port
 
-      - name: JavaScript syntax
+      - name: Script syntax
         run: |
           node --check row-office-browser/row-office-client.js
           node --check row-office-browser/row-office-worker-loader.js
           node --check row-office-browser/row-office-thread.js
           node --check row-office-browser/row-office-view.js
           node --check row-office-browser/reborn-office.js
+          bash -n row-office-browser/prepare-runtime-tree.sh
+          python3 -m py_compile row-office-lok/integrate_bridge.py
 
       - name: Single-thread architecture guards
         run: |
@@ -39,8 +42,10 @@ jobs:
           grep -q "compositionend" row-office-browser/row-office-view.js
           grep -q "dm\.readFile" row-office-browser/reborn-office.js
           grep -q "dm\.writeFile" row-office-browser/reborn-office.js
+          grep -q "gb_StaticLibrary_add_exception_objects,unoembind" row-office-lok/integrate_bridge.py
+          grep -q "rowLokProcessEventsToIdle" row-office-lok/row_lok_bridge.cxx
 
       - name: Describe bridge footprint
         run: |
-          wc -c row-office-browser/*.js
-          sha256sum row-office-browser/*.js
+          wc -c row-office-browser/*.js row-office-lok/*
+          sha256sum row-office-browser/*.js row-office-lok/*
