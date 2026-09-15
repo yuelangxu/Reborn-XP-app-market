@@ -24,6 +24,7 @@ jobs:
           node --check row-office-browser/row-office-client.js
           node --check row-office-browser/row-office-worker-loader.js
           node --check row-office-browser/row-office-thread.js
+          node --check row-office-browser/row-office-view.js
           node --check row-office-browser/reborn-office.js
 
       - name: Single-thread architecture guards
@@ -33,6 +34,9 @@ jobs:
           ! grep -R -nE 'PROXY_TO_PTHREAD|PThread\.pthreads' row-office-browser
           grep -q "new Worker" row-office-browser/row-office-client.js
           grep -q "sharedMemory" row-office-browser/row-office-thread.js
+          grep -q "renderTile" row-office-browser/row-office-view.js
+          grep -q "lok-callback" row-office-browser/row-office-view.js
+          grep -q "compositionend" row-office-browser/row-office-view.js
           grep -q "dm\.readFile" row-office-browser/reborn-office.js
           grep -q "dm\.writeFile" row-office-browser/reborn-office.js
 
