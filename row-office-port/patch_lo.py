@@ -295,6 +295,28 @@ s = replace_once(
 )
 write(rel, s)
 
+# 9. Headless VCL pulls Cairo into the final static Emscripten link, but the
+# pinned Cairo external only contributes FreeType headers.  Qt WASM builds do
+# not expose this, while the headless static build leaves Cairo's FT_* symbols
+# unresolved.  Add the actual FreeType external to the same headless closure.
+rel = "vcl/Library_vcl.mk"
+s = read(rel)
+old = """# fontconfig depends on expat for static builds
+$(eval $(call gb_Library_use_externals,vcl,\\
+    $(if $(USE_HEADLESS_CODE), \\
+        cairo \\
+        $(if $(ENABLE_CPDB),cpdb) \\
+"""
+new = """# fontconfig depends on expat for static builds
+$(eval $(call gb_Library_use_externals,vcl,\\
+    $(if $(USE_HEADLESS_CODE), \\
+        cairo \\
+        freetype \\
+        $(if $(ENABLE_CPDB),cpdb) \\
+"""
+s = replace_once(s, old, new, "headless VCL FreeType linkage")
+write(rel, s)
+
 report = {
     "pinnedCommit": PIN,
     "patchedFiles": changes,
@@ -304,6 +326,7 @@ report = {
     "unoInit": "direct-current-runtime",
     "shellExecute": "worker-safe-current-runtime",
     "maxConcurrencyEnv": 1,
+    "headlessFreetypeLink": True,
 }
 (ROOT / "row-patch-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(report, indent=2))
