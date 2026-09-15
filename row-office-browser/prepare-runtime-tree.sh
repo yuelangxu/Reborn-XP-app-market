@@ -10,6 +10,7 @@ RUNTIME_DIR=$(cd "$1" && pwd)
 OUT=$2
 HERE=$(cd "$(dirname "$0")" && pwd)
 ZETA_COMMIT=b3dec98af5dc4c059a260afd6db0bf0fe38c6384
+NOTO_CJK_COMMIT=f8d157532fbfaeda587e826d4cd5b21a49186f7c
 
 rm -rf "$OUT"
 mkdir -p "$OUT/runtime" "$OUT/vendor" "$OUT/THIRD_PARTY_LICENSES"
@@ -42,7 +43,15 @@ else
     -o "$OUT/THIRD_PARTY_LICENSES/ZetaJS-MIT.txt"
 fi
 
-python3 - "$OUT" "$ZETA_COMMIT" <<'PY'
+if [ -n "${NOTO_CJK_LICENSE_SOURCE:-}" ]; then
+  cp "$NOTO_CJK_LICENSE_SOURCE" "$OUT/THIRD_PARTY_LICENSES/NotoSansCJK-OFL-1.1.txt"
+else
+  curl --fail --location --retry 3 \
+    "https://raw.githubusercontent.com/notofonts/noto-cjk/${NOTO_CJK_COMMIT}/Sans/LICENSE" \
+    -o "$OUT/THIRD_PARTY_LICENSES/NotoSansCJK-OFL-1.1.txt"
+fi
+
+python3 - "$OUT" "$ZETA_COMMIT" "$NOTO_CJK_COMMIT" <<'PY'
 import hashlib
 import json
 import sys
@@ -50,6 +59,7 @@ from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
 zeta_commit = sys.argv[2]
+noto_cjk_commit = sys.argv[3]
 files = []
 for path in sorted(p for p in root.rglob('*') if p.is_file()):
     data = path.read_bytes()
@@ -64,6 +74,7 @@ manifest = {
     'sharedMemoryRequired': False,
     'nativeServerRequired': False,
     'zetajsCommit': zeta_commit,
+    'notoCjkCommit': noto_cjk_commit,
     'files': files,
 }
 (root / 'runtime-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
