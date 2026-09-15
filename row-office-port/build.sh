@@ -20,6 +20,7 @@ cat > "$BUILD/autogen.input" <<EOF
 --disable-online-update
 --disable-scripting
 --disable-gui
+--disable-emscripten-proxy-to-pthread
 --build=x86_64-pc-linux-gnu
 --host=wasm32-local-emscripten
 --with-wasm-module=writer
