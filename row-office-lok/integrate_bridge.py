@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Stage the ROW LOK bridge into a pinned LibreOffice checkout.
 
-This helper intentionally lives outside row-office-port so editing it does not
-start another multi-hour core build.  Once the current compiler frontier is
-known, patch_lo.py can call the same deterministic transform.
+The real Reborn runtime runs the whole single-thread LibreOffice instance in one
+ordinary DedicatedWorker.  Alongside the LOK bridge, make LibreOffice's non-
+pthread UNO script loader synchronous for ROW builds so zeta.js and the ROW
+thread bridge are present before Module.uno_init is resolved.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ HARNESS = Path(__file__).resolve().parent
 BRIDGE = HARNESS / "row_lok_bridge.cxx"
 TARGET = ROOT / "static/source/unoembindhelpers/RowLokBridge.cxx"
 MK = ROOT / "static/StaticLibrary_unoembind.mk"
+UNO_INIT = ROOT / "desktop/source/app/initjsunoscripting.cxx"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -55,5 +57,35 @@ text = replace_once(
 )
 MK.write_text(text, encoding="utf-8")
 
+# In upstream's non-PROXY_TO_PTHREAD path runUnoScriptUrls uses fetch().then(),
+# i.e. it returns before the UNO scripts have actually executed.  The ROW patch
+# resolves Module.uno_init immediately after runUnoScriptUrls(), which would race
+# zeta.js/row-office-thread.js.  Our runtime is deliberately hosted in a classic
+# DedicatedWorker, where importScripts() is synchronous, so give ROW builds that
+# deterministic branch while leaving upstream's other modes unchanged.
+if UNO_INIT.is_file():
+    text = UNO_INIT.read_text(encoding="utf-8")
+    old = """});
+#else
+EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
+    const urls = Emval.toValue(handle);
+"""
+    new = """});
+#elif defined ROW_EMSCRIPTEN_SINGLE_THREAD
+EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
+    globalThis.Module = globalThis.Module || Module;
+    importScripts.apply(self, Emval.toValue(handle));
+});
+#else
+EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
+    const urls = Emval.toValue(handle);
+"""
+    UNO_INIT.write_text(
+        replace_once(text, old, new, "ROW synchronous UNO script loader"),
+        encoding="utf-8",
+    )
+
 print(f"ROW LOK bridge copied to {TARGET.relative_to(ROOT)}")
 print("ROW LOK bridge added to whole-archived unoembind static library")
+if UNO_INIT.is_file():
+    print("ROW UNO scripts use synchronous importScripts() in the DedicatedWorker")
