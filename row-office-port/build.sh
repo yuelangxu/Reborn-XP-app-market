@@ -7,7 +7,7 @@ PORT=${PORT:-$PWD/row-office-port}
 IMAGE=${IMAGE:-public.ecr.aws/allotropia/libo-builders/wasm}
 mkdir -p "$BUILD" "$TARBALLS"
 python3 "$PORT/patch_lo.py" "$SRC"
-cat > "$SRC/autogen.input" <<EOF
+cat > "$BUILD/autogen.input" <<EOF
 --disable-debug
 --disable-optimized
 --enable-sal-log
@@ -38,16 +38,19 @@ docker run --rm \
     set -o pipefail
     source /home/builder/emsdk/emsdk_env.sh
     cd /build
-    echo "[ROW] configure" | tee row-build.log
-    ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE /src/autogen.sh 2>&1 | tee -a row-build.log
+    echo "[ROW] native compiler probe" | tee row-build.log
+    command -v clang | tee -a row-build.log
+    clang --version | head -n 3 | tee -a row-build.log
+    echo "[ROW] configure" | tee -a row-build.log
+    CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE /src/autogen.sh 2>&1 | tee -a row-build.log
     rc=${PIPESTATUS[0]}
     if [ "$rc" -ne 0 ]; then exit "$rc"; fi
     echo "[ROW] fetch external tarballs" | tee -a row-build.log
-    ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make fetch -j2 2>&1 | tee -a row-build.log
+    CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make fetch -j2 2>&1 | tee -a row-build.log
     rc=${PIPESTATUS[0]}
     if [ "$rc" -ne 0 ]; then exit "$rc"; fi
     echo "[ROW] full headless Writer build" | tee -a row-build.log
-    ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make -rj2 2>&1 | tee -a row-build.log
+    CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make -rj2 2>&1 | tee -a row-build.log
     exit ${PIPESTATUS[0]}
   '
 rc=$?
