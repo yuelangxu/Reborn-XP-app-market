@@ -23,7 +23,7 @@ for name in soffice.js soffice.wasm soffice.data soffice.data.js.metadata; do
   cp "$RUNTIME_DIR/$name" "$OUT/runtime/$name"
 done
 
-for name in reborn-office.js row-office-client.js row-office-view.js row-office-worker-loader.js row-office-thread.js; do
+for name in reborn-office.js row-office-client.js row-office-view.js row-office-worker-loader.js row-office-thread.js acceptance.html; do
   cp "$HERE/$name" "$OUT/$name"
 done
 
