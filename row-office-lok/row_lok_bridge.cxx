@@ -18,6 +18,7 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
+#include <LibreOfficeKit/LibreOfficeKitEnums.h>
 #include <com/sun/star/lang/XComponent.hpp>
 #include <com/sun/star/uno/Reference.hxx>
 #include <comphelper/lok.hxx>
@@ -143,6 +144,21 @@ public:
         m_document->pClass->postKeyEvent(m_document.get(), type, charCode, keyCode);
     }
 
+    void postTextInput(const std::string& text)
+    {
+        requireDocument();
+        m_document->pClass->postWindowExtTextInputEvent(
+            m_document.get(), 0, LOK_EXT_TEXTINPUT, text.c_str());
+        m_document->pClass->postWindowExtTextInputEvent(
+            m_document.get(), 0, LOK_EXT_TEXTINPUT_END, text.c_str());
+    }
+
+    void removeTextContext(int before, int after)
+    {
+        requireDocument();
+        m_document->pClass->removeTextContext(m_document.get(), 0, before, after);
+    }
+
     void postMouseEvent(int type, int xTwips, int yTwips, int count, int buttons, int modifiers)
     {
         requireDocument();
@@ -218,6 +234,8 @@ EMSCRIPTEN_BINDINGS(row_lok_bridge)
         .function("createView", &RowLokDocument::createView)
         .function("setView", &RowLokDocument::setView)
         .function("postKeyEvent", &RowLokDocument::postKeyEvent)
+        .function("postTextInput", &RowLokDocument::postTextInput)
+        .function("removeTextContext", &RowLokDocument::removeTextContext)
         .function("postMouseEvent", &RowLokDocument::postMouseEvent)
         .function("postUnoCommand", &RowLokDocument::postUnoCommand)
         .function("setTextSelection", &RowLokDocument::setTextSelection)
