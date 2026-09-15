@@ -64,12 +64,21 @@ jobs:
           path: row-python
           key: row-python-3.12.13-allotropia-wasm-v1
 
-      - name: Probe builder Python
+      - name: Restore LibreOffice compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: lo-ccache
+          key: row-lo-ccache-v1-${{ runner.os }}-31eabe1e-${{ github.run_id }}
+          restore-keys: |
+            row-lo-ccache-v1-${{ runner.os }}-31eabe1e-
+
+      - name: Probe builder Python and browser
         run: |
           ./row-python/bin/python3 --version
           ldd ./row-python/bin/python3 || true
+          (google-chrome --version || google-chrome-stable --version || chromium --version || chromium-browser --version) 2>/dev/null || true
 
-      - name: Build no-pthread headless Writer
+      - name: Build and accept no-pthread Writer runtime
         id: build
         continue-on-error: true
         env:
@@ -77,7 +86,9 @@ jobs:
           BUILD: ${{ github.workspace }}/lo-build
           TARBALLS: ${{ github.workspace }}/lo-tarballs
           PORT: ${{ github.workspace }}/harness/row-office-port
+          HARNESS: ${{ github.workspace }}/harness
           HOST_PYTHON: ${{ github.workspace }}/row-python
+          CCACHE_HOST_DIR: ${{ github.workspace }}/lo-ccache
         run: bash harness/row-office-port/build.sh
 
       - name: Show first failure signals
@@ -87,10 +98,21 @@ jobs:
           cat libreoffice/row-patch-report.json 2>/dev/null || true
           echo '--- build summary ---'
           cat lo-build/row-build-summary.json 2>/dev/null || true
+          echo '--- WASM inspection ---'
+          cat lo-build/soffice-inspection.json 2>/dev/null || true
+          echo '--- browser acceptance ---'
+          grep -A 120 -B 2 'data-status=' lo-build/row-runtime-tree/row-acceptance-dom.txt 2>/dev/null || true
           echo '--- tail ---'
-          tail -n 250 lo-build/row-build.log 2>/dev/null || true
+          tail -n 300 lo-build/row-build.log 2>/dev/null || true
           echo '--- disk ---'
           df -h
+
+      - name: Save LibreOffice compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: lo-ccache
+          key: row-lo-ccache-v1-${{ runner.os }}-31eabe1e-${{ github.run_id }}
 
       - name: Upload compiler evidence
         if: always()
@@ -109,6 +131,20 @@ jobs:
             lo-build/runtime-files.txt
             lo-build/soffice-inspection.json
             lo-build/ROW-soffice.wasm
+            lo-build/row-acceptance-http.log
+            lo-build/row-acceptance-chrome.log
+            lo-build/row-runtime-tree/row-acceptance-dom.txt
+            lo-build/row-third-party-licenses
+
+      - name: Upload complete Reborn Office runtime
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reborn-office-runtime
+          retention-days: 14
+          if-no-files-found: ignore
+          compression-level: 0
+          path: lo-build/row-runtime-tree
 
       - name: Preserve failure state
         if: steps.build.outcome == 'failure'
