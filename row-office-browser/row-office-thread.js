@@ -1,4 +1,4 @@
-/* Reborn Office WASM: UNO/ZetaJS bridge executed inside the LibreOffice worker.
+/* Reborn Office WASM: UNO/ZetaJS + upstream LibreOfficeKit bridge.
  * Loaded through Module.uno_scripts after LibreOffice's UNO Embind layer exists.
  */
 'use strict';
@@ -9,6 +9,7 @@
   let context;
   let desktop;
   let xModel;
+  let lokDoc;
   let requestQueue = Promise.resolve();
   let serial = 0;
 
@@ -20,13 +21,26 @@
     txt: 'Text'
   });
 
+  const TILEMODE_RGBA = 0;
+  const TILEMODE_BGRA = 1;
+
   function emit(kind, payload = {}, transfer = []) {
     self.postMessage({rowOffice: true, kind, ...payload}, transfer);
+  }
+
+  function lokAvailable() {
+    return typeof Module.rowLokSetActive === 'function'
+      && typeof Module.RowLokDocument === 'function';
   }
 
   function assertReady() {
     if (!zetajs || !css || !desktop) throw new Error('ROW_UNO_NOT_READY');
     if (typeof FS === 'undefined') throw new Error('ROW_EMSCRIPTEN_FS_NOT_VISIBLE');
+  }
+
+  function assertLok() {
+    if (!lokAvailable()) throw new Error('ROW_LOK_BRIDGE_NOT_BUILT');
+    if (!lokDoc) throw new Error('ROW_LOK_DOCUMENT_NOT_READY');
   }
 
   function safeName(name, fallback) {
@@ -38,8 +52,6 @@
     try {
       FS.mkdirTree('/tmp/row-office');
     } catch (error) {
-      // mkdirTree is idempotent in Emscripten.  Re-throw only if the directory
-      // still does not exist after an unexpected implementation-specific error.
       try {
         const stat = FS.stat('/tmp/row-office');
         if (!FS.isDir(stat.mode)) throw error;
@@ -59,16 +71,39 @@
     return `file://${path}`;
   }
 
-  function closeCurrent() {
-    if (!xModel) return;
+  function releaseLokFacade() {
+    if (!lokDoc) return;
     try {
-      const closeable = xModel.queryInterface(zetajs.type.interface(css.util.XCloseable));
-      if (closeable) xModel.close(false);
-    } catch (_) {
-      // Closing is best effort during replacement.  A load/save failure is
-      // reported by the actual operation rather than hidden here.
+      lokDoc.delete();
+    } catch (error) {
+      console.warn('[ROW] failed to release LOK facade', error);
     }
-    xModel = undefined;
+    lokDoc = undefined;
+  }
+
+  function attachLokFacade() {
+    if (!lokAvailable()) return false;
+    releaseLokFacade();
+    lokDoc = new Module.RowLokDocument();
+    lokDoc.initializeForRendering('');
+    return true;
+  }
+
+  function closeCurrent() {
+    if (xModel) {
+      try {
+        const closeable = xModel.queryInterface(zetajs.type.interface(css.util.XCloseable));
+        if (closeable) xModel.close(false);
+      } catch (_) {
+        // Closing is best effort during replacement. A later load/save failure
+        // is reported by the actual operation rather than hidden here.
+      }
+      xModel = undefined;
+    }
+    // RowLokDocument owns a strong UNO reference.  Releasing it only after the
+    // normal XCloseable path means its upstream destructor sees an already
+    // disposed component and follows LibreOffice's own tolerant cleanup path.
+    releaseLokFacade();
   }
 
   function newWriter() {
@@ -76,7 +111,8 @@
     closeCurrent();
     xModel = desktop.loadComponentFromURL('private:factory/swriter', '_blank', 0, []);
     if (!xModel) throw new Error('ROW_WRITER_FACTORY_FAILED');
-    return {text: readText()};
+    attachLokFacade();
+    return {text: readText(), lok: Boolean(lokDoc)};
   }
 
   function openBytes(payload) {
@@ -88,7 +124,8 @@
     closeCurrent();
     xModel = desktop.loadComponentFromURL(fileUrl(path), '_blank', 0, []);
     if (!xModel) throw new Error('ROW_DOCUMENT_LOAD_FAILED');
-    return {path, text: readText(), byteLength: bytes.byteLength};
+    attachLokFacade();
+    return {path, text: readText(), byteLength: bytes.byteLength, lok: Boolean(lokDoc)};
   }
 
   function readText() {
@@ -152,6 +189,7 @@
     closeCurrent();
     xModel = desktop.loadComponentFromURL(fileUrl(path), '_blank', 0, []);
     if (!xModel) throw new Error('ROW_DOCUMENT_REOPEN_FAILED');
+    attachLokFacade();
     return readText();
   }
 
@@ -167,8 +205,98 @@
       marker,
       reopened,
       byteLength: saved.bytes.byteLength,
-      pass: reopened.includes(marker)
+      pass: reopened.includes(marker),
+      lok: Boolean(lokDoc)
     };
+  }
+
+  function lokInfo() {
+    assertLok();
+    const size = lokDoc.documentSize();
+    return {
+      widthTwips: Number(size[0]),
+      heightTwips: Number(size[1]),
+      pageRectangles: String(lokDoc.pageRectangles()),
+      tileMode: Number(lokDoc.tileMode()),
+      viewId: Number(lokDoc.viewId())
+    };
+  }
+
+  function normalizeTileToRgba(bytes, mode) {
+    if (mode === TILEMODE_RGBA) return bytes;
+    if (mode !== TILEMODE_BGRA) throw new Error(`ROW_UNKNOWN_TILE_MODE:${mode}`);
+    for (let i = 0; i + 3 < bytes.length; i += 4) {
+      const red = bytes[i];
+      bytes[i] = bytes[i + 2];
+      bytes[i + 2] = red;
+    }
+    return bytes;
+  }
+
+  function renderTile(payload) {
+    assertLok();
+    const canvasWidth = Math.max(1, Number(payload.canvasWidth || 256) | 0);
+    const canvasHeight = Math.max(1, Number(payload.canvasHeight || 256) | 0);
+    const xTwips = Number(payload.xTwips || 0) | 0;
+    const yTwips = Number(payload.yTwips || 0) | 0;
+    const widthTwips = Math.max(1, Number(payload.widthTwips || canvasWidth * 15) | 0);
+    const heightTwips = Math.max(1, Number(payload.heightTwips || canvasHeight * 15) | 0);
+    const mode = Number(lokDoc.tileMode());
+    const wasmView = lokDoc.paintTile(
+      canvasWidth, canvasHeight, xTwips, yTwips, widthTwips, heightTwips);
+    const copy = normalizeTileToRgba(new Uint8ClampedArray(wasmView).slice(), mode);
+    return {
+      payload: {
+        canvasWidth,
+        canvasHeight,
+        xTwips,
+        yTwips,
+        widthTwips,
+        heightTwips,
+        rgba: copy.buffer
+      },
+      transfer: [copy.buffer]
+    };
+  }
+
+  function lokKey(payload) {
+    assertLok();
+    lokDoc.postKeyEvent(
+      Number(payload.type || 0) | 0,
+      Number(payload.charCode || 0) | 0,
+      Number(payload.keyCode || 0) | 0);
+    return {ok: true};
+  }
+
+  function lokMouse(payload) {
+    assertLok();
+    lokDoc.postMouseEvent(
+      Number(payload.type || 0) | 0,
+      Number(payload.xTwips || 0) | 0,
+      Number(payload.yTwips || 0) | 0,
+      Math.max(1, Number(payload.count || 1) | 0),
+      Number(payload.buttons || 0) | 0,
+      Number(payload.modifiers || 0) | 0);
+    return {ok: true};
+  }
+
+  function lokUno(payload) {
+    assertLok();
+    lokDoc.postUnoCommand(
+      String(payload.command || ''),
+      payload.args == null ? '' : String(payload.args),
+      Boolean(payload.notifyWhenFinished));
+    return {ok: true};
+  }
+
+  function lokVisibleArea(payload) {
+    assertLok();
+    lokDoc.setClientVisibleArea(
+      Number(payload.xTwips || 0) | 0,
+      Number(payload.yTwips || 0) | 0,
+      Math.max(1, Number(payload.widthTwips || 1) | 0),
+      Math.max(1, Number(payload.heightTwips || 1) | 0));
+    return {ok: true};
   }
 
   function normalizeError(error) {
@@ -200,6 +328,13 @@
       case 'append-text': return appendText(payload.text);
       case 'save-bytes': return saveBytes(payload);
       case 'roundtrip': return roundTrip(payload);
+      case 'lok-info': return lokInfo();
+      case 'render-tile': return renderTile(payload);
+      case 'lok-key': return lokKey(payload);
+      case 'lok-mouse': return lokMouse(payload);
+      case 'lok-uno': return lokUno(payload);
+      case 'lok-visible-area': return lokVisibleArea(payload);
+      case 'lok-selection': assertLok(); return {text: String(lokDoc.textSelection())};
       case 'close': closeCurrent(); return {closed: true};
       default: throw new Error(`ROW_UNKNOWN_COMMAND:${command}`);
     }
@@ -231,14 +366,21 @@
     context = zetajs.getUnoComponentContext();
     desktop = css.frame.Desktop.create(context);
     ensureTempDir();
+
+    // LOK must be active before the Writer view is created so document/view
+    // construction takes the same tiled-rendering path as normal LOK loads.
+    if (lokAvailable()) Module.rowLokSetActive(true);
+
     installRpc();
     emit('ready', {
       engine: 'LibreOffice Technology',
       execution: 'single DedicatedWorker',
+      lokBridge: lokAvailable(),
       sharedMemory: typeof SharedArrayBuffer !== 'undefined'
         && Module && Module.HEAP8 && Module.HEAP8.buffer instanceof SharedArrayBuffer
     });
   }).catch((error) => {
-    emit('fatal', {message: normalizeError(error).message, stack: normalizeError(error).stack});
+    const normalized = normalizeError(error);
+    emit('fatal', {message: normalized.message, stack: normalized.stack});
   });
 })();
