@@ -8,7 +8,6 @@
 
 #if defined __EMSCRIPTEN__
 
-#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -21,9 +20,8 @@
 
 #include <com/sun/star/lang/XComponent.hpp>
 #include <com/sun/star/uno/Reference.hxx>
-#include <com/sun/star/uno/UNO_QUERY.hxx>
 #include <comphelper/lok.hxx>
-#include <desktop/inc/lib/init.hxx>
+#include <lib/init.hxx>
 #include <sfx2/viewsh.hxx>
 
 namespace
