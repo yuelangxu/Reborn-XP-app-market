@@ -208,12 +208,102 @@ s = replace_once(
 )
 write(rel, s)
 
+# 6. JS UNO startup: a true single-thread build has no Emscripten pthread proxy
+# queue to dispatch work to.  We are already on the only runtime thread, so get
+# the script URLs directly and resolve UNO/main locally with a loopback channel.
+rel = "desktop/source/app/initjsunoscripting.cxx"
+s = read(rel)
+old = """void initJsUnoScripting() {
+    init_unoembind_uno();
+    std::vector<std::u16string> urls;
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, getUnoScriptUrls, &urls);
+    runUnoScriptUrls(emscripten::val::array(urls).as_handle());
+    setupMainChannel();
+    emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VI, resolveUnoMain, pthread_self());
+}
+"""
+new = """void initJsUnoScripting() {
+    init_unoembind_uno();
+    std::vector<std::u16string> urls;
+#if defined ROW_EMSCRIPTEN_SINGLE_THREAD
+    getUnoScriptUrls(&urls);
+    runUnoScriptUrls(emscripten::val::array(urls).as_handle());
+    EM_ASM({
+        const channel = new MessageChannel();
+        Module.uno_mainPort = channel.port2;
+        Module.uno_init$resolve();
+        Module.uno_main$resolve(channel.port1);
+    });
+#else
+    emscripten_sync_run_in_main_runtime_thread(EM_FUNC_SIG_VI, getUnoScriptUrls, &urls);
+    runUnoScriptUrls(emscripten::val::array(urls).as_handle());
+    setupMainChannel();
+    emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VI, resolveUnoMain, pthread_self());
+#endif
+}
+"""
+s = replace_once(s, old, new, "single-thread UNO init")
+write(rel, s)
+
+# 7. SystemShellExecute: no pthread proxy exists in ROW mode.  Call the browser
+# hook on the current runtime thread.  The hook itself becomes Worker-safe and
+# asks the parent UI to open external URLs when soffice runs in a DedicatedWorker.
+rel = "shell/source/unix/exec/shellexec.cxx"
+s = read(rel)
+old = """    emscripten_sync_run_in_main_runtime_thread(
+        EM_FUNC_SIG_VI, execute_browser, sEscapedURI.toUtf8().getStr());
+"""
+new = """#if defined ROW_EMSCRIPTEN_SINGLE_THREAD
+    execute_browser(sEscapedURI.toUtf8().getStr());
+#else
+    emscripten_sync_run_in_main_runtime_thread(
+        EM_FUNC_SIG_VI, execute_browser, sEscapedURI.toUtf8().getStr());
+#endif
+"""
+s = replace_once(s, old, new, "single-thread shell execute")
+write(rel, s)
+
+rel = "shell/source/unix/exec/shellexec_em.cxx"
+s = read(rel)
+old = "void execute_browser(const char* sUrl) { EM_ASM(\"window.open(UTF8ToString($0));\", sUrl); }\n"
+new = """void execute_browser(const char* sUrl) {
+#if defined ROW_EMSCRIPTEN_SINGLE_THREAD
+    EM_ASM({
+        const url = UTF8ToString($0);
+        if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
+            self.postMessage({ rowOffice: true, kind: 'open-url', url });
+        } else if (typeof window !== 'undefined') {
+            window.open(url);
+        }
+    }, sUrl);
+#else
+    EM_ASM("window.open(UTF8ToString($0));", sUrl);
+#endif
+}
+"""
+s = replace_once(s, old, new, "worker-safe shell browser hook")
+write(rel, s)
+
+# 8. Keep all generic concurrency hints consistent with the one-lane ThreadPool.
+rel = "static/emscripten/environment.js"
+s = read(rel)
+s = replace_once(
+    s,
+    "    ENV.MAX_CONCURRENCY = '4';\n",
+    "    ENV.MAX_CONCURRENCY = '1';\n",
+    "single-thread MAX_CONCURRENCY",
+)
+write(rel, s)
+
 report = {
     "pinnedCommit": PIN,
     "patchedFiles": changes,
     "mode": "headless-writer-no-pthread",
     "threadPoolLogicalLanes": 1,
     "threadPoolExecution": "synchronous-inline",
+    "unoInit": "direct-current-runtime",
+    "shellExecute": "worker-safe-current-runtime",
+    "maxConcurrencyEnv": 1,
 }
 (ROOT / "row-patch-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(report, indent=2))
