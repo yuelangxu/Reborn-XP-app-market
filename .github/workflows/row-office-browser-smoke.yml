@@ -47,5 +47,6 @@ jobs:
 
       - name: Describe bridge footprint
         run: |
-          wc -c row-office-browser/*.js row-office-lok/*
-          sha256sum row-office-browser/*.js row-office-lok/*
+          mapfile -t files < <(find row-office-browser row-office-lok -type f ! -path '*/__pycache__/*' -print | sort)
+          wc -c "${files[@]}"
+          sha256sum "${files[@]}"
