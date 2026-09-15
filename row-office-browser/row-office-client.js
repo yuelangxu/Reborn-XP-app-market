@@ -141,6 +141,14 @@
       return this.request('lok-key', {type, charCode, keyCode});
     }
 
+    postTextInput(text) {
+      return this.request('lok-text', {text});
+    }
+
+    removeTextContext(before = 0, after = 0) {
+      return this.request('lok-remove-text', {before, after});
+    }
+
     postLokMouse(type, xTwips, yTwips, count = 1, buttons = 0, modifiers = 0) {
       return this.request('lok-mouse', {type, xTwips, yTwips, count, buttons, modifiers});
     }
