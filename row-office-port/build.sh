@@ -16,6 +16,7 @@ cat > "$BUILD/autogen.input" <<EOF
 --disable-online-update
 --disable-scripting
 --disable-gui
+--build=x86_64-pc-linux-gnu
 --host=wasm32-local-emscripten
 --with-wasm-module=writer
 --with-package-format=emscripten
@@ -40,11 +41,24 @@ cd /build
 : > row-build.log
 log() { printf '%s\n' "$*" | tee -a row-build.log; }
 
+# Diagnostics must never abort a build.  In particular, piping a version
+# command through head while pipefail is active can turn an innocent SIGPIPE
+# into a fatal probe failure.
 log "[ROW] native compiler probe"
-command -v clang | tee -a row-build.log
-clang --version | head -n 3 | tee -a row-build.log
-command -v emcc | tee -a row-build.log
-emcc --version | head -n 3 | tee -a row-build.log
+for tool in clang emcc; do
+  tool_path=$(command -v "$tool" || true)
+  if [ -z "$tool_path" ]; then
+    log "[ROW] WARNING: $tool is not on PATH"
+    continue
+  fi
+  log "[ROW] $tool path: $tool_path"
+  if "$tool" --version >> row-build.log 2>&1; then
+    log "[ROW] $tool version probe rc=0"
+  else
+    probe_rc=$?
+    log "[ROW] WARNING: $tool --version rc=$probe_rc"
+  fi
+done
 
 if [ -n "${ROW_PYTHON:-}" ]; then
   export PATH=/opt/row-python/bin:$PATH
@@ -127,6 +141,8 @@ PY
 fi
 
 log "[ROW] configure"
+log "[ROW] explicit build triplet: x86_64-pc-linux-gnu"
+log "[ROW] explicit host triplet: wasm32-local-emscripten"
 CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE /src/autogen.sh 2>&1 | tee -a row-build.log
 rc=${PIPESTATUS[0]}
 if [ "$rc" -ne 0 ]; then exit "$rc"; fi
