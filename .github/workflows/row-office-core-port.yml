@@ -69,6 +69,22 @@ jobs:
           ./row-python/bin/python3 --version
           ldd ./row-python/bin/python3 || true
 
+      - name: Restore LibreOffice ccache
+        id: lo-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: row-ccache
+          key: row-lo-ccache-v1-${{ github.run_id }}
+          restore-keys: |
+            row-lo-ccache-v1-
+
+      - name: Restore LibreOffice external tarballs
+        id: tarball-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: lo-tarballs
+          key: row-lo-tarballs-core-31eabe1-v1
+
       - name: Build no-pthread headless Writer
         id: build
         continue-on-error: true
@@ -78,7 +94,43 @@ jobs:
           TARBALLS: ${{ github.workspace }}/lo-tarballs
           PORT: ${{ github.workspace }}/harness/row-office-port
           HOST_PYTHON: ${{ github.workspace }}/row-python
+          ROW_CCACHE_DIR: ${{ github.workspace }}/row-ccache
         run: bash harness/row-office-port/build.sh
+
+      - name: Save LibreOffice ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: row-ccache
+          key: row-lo-ccache-v1-${{ github.run_id }}
+
+      - name: Save LibreOffice external tarballs
+        if: always() && steps.tarball-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: lo-tarballs
+          key: row-lo-tarballs-core-31eabe1-v1
+
+      - name: Collect complete browser runtime
+        if: always()
+        run: |
+          rm -rf lo-build/ROW-runtime
+          mkdir -p lo-build/ROW-runtime
+          if [ -f lo-build/runtime-files.txt ]; then
+            while IFS= read -r file; do
+              [ -f "$file" ] || continue
+              rel=${file#"$GITHUB_WORKSPACE/lo-build/"}
+              mkdir -p "lo-build/ROW-runtime/$(dirname "$rel")"
+              cp "$file" "lo-build/ROW-runtime/$rel"
+            done < lo-build/runtime-files.txt
+          fi
+          find lo-build/ROW-runtime -type f -print0 \
+            | sort -z \
+            | xargs -0 -r sha256sum \
+            > lo-build/ROW-runtime-manifest.sha256
+          echo '--- collected runtime ---'
+          find lo-build/ROW-runtime -type f -print | sort
+          cat lo-build/ROW-runtime-manifest.sha256 || true
 
       - name: Show first failure signals
         if: always()
@@ -87,12 +139,18 @@ jobs:
           cat libreoffice/row-patch-report.json 2>/dev/null || true
           echo '--- build summary ---'
           cat lo-build/row-build-summary.json 2>/dev/null || true
+          echo '--- runtime files ---'
+          cat lo-build/runtime-files.txt 2>/dev/null || true
+          echo '--- soffice inspection ---'
+          cat lo-build/soffice-inspection.json 2>/dev/null || true
           echo '--- tail ---'
           tail -n 250 lo-build/row-build.log 2>/dev/null || true
+          echo '--- ccache ---'
+          du -sh row-ccache 2>/dev/null || true
           echo '--- disk ---'
           df -h
 
-      - name: Upload compiler evidence
+      - name: Upload compiler evidence and browser runtime
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -109,6 +167,8 @@ jobs:
             lo-build/runtime-files.txt
             lo-build/soffice-inspection.json
             lo-build/ROW-soffice.wasm
+            lo-build/ROW-runtime-manifest.sha256
+            lo-build/ROW-runtime/**
 
       - name: Preserve failure state
         if: steps.build.outcome == 'failure'
