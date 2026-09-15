@@ -89,7 +89,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: lo-tarballs
-          key: row-lo-tarballs-core-31eabe1-v1
+          key: row-lo-tarballs-core-31eabe1-v2-${{ github.run_id }}
+          restore-keys: |
+            row-lo-tarballs-core-31eabe1-v2-
 
       - name: Build no-pthread headless Writer
         id: build
@@ -115,11 +117,11 @@ jobs:
           key: row-lo-ccache-v1-${{ github.run_id }}
 
       - name: Save LibreOffice external tarballs
-        if: always() && steps.tarball-cache.outputs.cache-hit != 'true'
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: lo-tarballs
-          key: row-lo-tarballs-core-31eabe1-v1
+          key: row-lo-tarballs-core-31eabe1-v2-${{ github.run_id }}
 
       - name: Collect complete browser runtime
         if: always()
