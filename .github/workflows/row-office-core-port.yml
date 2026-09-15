@@ -35,14 +35,15 @@ jobs:
           path: libreoffice
           fetch-depth: 1
 
-      - name: Cache builder-compatible Python 3.12
-        uses: actions/cache@v4
+      - name: Restore builder-compatible Python 3.12
+        id: python-cache
+        uses: actions/cache/restore@v4
         with:
           path: row-python
           key: row-python-3.12.13-allotropia-wasm-v1
 
       - name: Download verified CPython source
-        if: ${{ !hashFiles('row-python/bin/python3') }}
+        if: steps.python-cache.outputs.cache-hit != 'true'
         run: |
           curl --fail --location --retry 3 \
             https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz \
@@ -50,11 +51,18 @@ jobs:
           echo '0816c4761c97ecdb3f50a3924de0a93fd78cb63ee8e6c04201ddfaedca500b0b  Python-3.12.13.tgz' | sha256sum -c -
 
       - name: Build Python inside the WASM builder
-        if: ${{ !hashFiles('row-python/bin/python3') }}
+        if: steps.python-cache.outputs.cache-hit != 'true'
         env:
           PREFIX: ${{ github.workspace }}/row-python
           SOURCE_ARCHIVE: ${{ github.workspace }}/Python-3.12.13.tgz
         run: bash harness/row-office-port/bootstrap_python.sh
+
+      - name: Save builder-compatible Python 3.12
+        if: steps.python-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: row-python
+          key: row-python-3.12.13-allotropia-wasm-v1
 
       - name: Probe builder Python
         run: |

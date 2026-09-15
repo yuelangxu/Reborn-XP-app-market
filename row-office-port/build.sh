@@ -158,7 +158,9 @@ exit ${PIPESTATUS[0]}
 ROW_CONTAINER_SCRIPT
 chmod +x "$BUILD/row-container-build.sh"
 
-docker pull "$IMAGE"
+# bootstrap_python.sh may already have pulled the image on this runner. Avoid a
+# second registry request and use the same retry policy if the image is absent.
+bash "$PORT/pull_builder_image.sh" "$IMAGE"
 PYMOUNT=()
 PYENV=()
 if [ -n "$HOST_PYTHON" ] && [ -x "$HOST_PYTHON/bin/python3" ]; then

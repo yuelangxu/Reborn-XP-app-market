@@ -3,6 +3,7 @@ set -euo pipefail
 IMAGE=${IMAGE:-public.ecr.aws/allotropia/libo-builders/wasm}
 PREFIX=${PREFIX:?PREFIX is required}
 SOURCE_ARCHIVE=${SOURCE_ARCHIVE:?SOURCE_ARCHIVE is required}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 mkdir -p "$PREFIX"
 if [ -x "$PREFIX/bin/python3" ]; then
@@ -11,7 +12,11 @@ if [ -x "$PREFIX/bin/python3" ]; then
   exit 0
 fi
 
-docker pull "$IMAGE"
+# Public ECR occasionally returns transient pull-rate errors. Reuse a runner-local
+# image when possible and retry before giving up instead of failing the whole
+# compiler experiment before LibreOffice is reached.
+bash "$SCRIPT_DIR/pull_builder_image.sh" "$IMAGE"
+
 docker run --rm \
   -v "$PREFIX:/row-python:rw" \
   -v "$SOURCE_ARCHIVE:/python-src.tgz:ro" \
