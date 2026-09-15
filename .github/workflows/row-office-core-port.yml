@@ -131,8 +131,8 @@ jobs:
             lo-build/runtime-files.txt
             lo-build/soffice-inspection.json
             lo-build/ROW-soffice.wasm
-            lo-build/row-acceptance-http.log
-            lo-build/row-acceptance-chrome.log
+            lo-build/row-runtime-tree/row-acceptance-http.log
+            lo-build/row-runtime-tree/row-acceptance-chrome.log
             lo-build/row-runtime-tree/row-acceptance-dom.txt
             lo-build/row-third-party-licenses
 
