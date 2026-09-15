@@ -34,7 +34,7 @@ jobs:
           bash -n row-office-port/build.sh
           python3 -m py_compile row-office-lok/integrate_bridge.py
           python3 -m py_compile row-office-lok/integrate_cjk_font.py
-          python3 -m py_compile row-office-browser/build-reborn-package.py
+          python3 -m py_compile row-office-browser/build-reborn-package-v2.py
           python3 -m py_compile row-office-browser/canonicalize-reborn-zip.py
 
       - name: Exercise gbuild and UNO script transforms
@@ -107,7 +107,7 @@ jobs:
           grep -q "a2033f163659aeab49c4d54aac59fe770ad05552" row-office-lok/prepare_cjk_font.sh
           grep -q "NotoSansCJK-Regular.ttc" row-office-lok/integrate_cjk_font.py
 
-      - name: Exercise deterministic Reborn package contract
+      - name: Exercise reproducible Reborn package contract
         run: |
           set -euo pipefail
           tmp=$(mktemp -d)
@@ -125,10 +125,8 @@ jobs:
           cp row-office-browser/reborn-office.js "$runtime/"
 
           for out in "$tmp/out1" "$tmp/out2"; do
-            python3 row-office-browser/build-reborn-package.py \
+            python3 row-office-browser/build-reborn-package-v2.py \
               "$runtime" "$out" --source-sha smoke --accepted
-            python3 row-office-browser/canonicalize-reborn-zip.py \
-              "$out/RebornOfficeWasm-browser-native.zip"
           done
           sha1=$(sha256sum "$tmp/out1/RebornOfficeWasm-browser-native.zip" | cut -d' ' -f1)
           sha2=$(sha256sum "$tmp/out2/RebornOfficeWasm-browser-native.zip" | cut -d' ' -f1)
@@ -155,6 +153,8 @@ jobs:
               assert 'apps.load' not in launcher['action']
               assert 'registerApp' in launcher['action']
               assert "C:/Program Files/RebornOfficeWasm" in launcher['action']
+              icon = zf.read('RebornOfficeWasm/icon.png')
+              assert icon.startswith(b'\x89PNG\r\n\x1a\n')
               manifest = json.loads(zf.read('RebornOfficeWasm/IMPORT-MANIFEST.json'))
               assert manifest['fileCount'] > 10
               release = json.loads(zf.read('RebornOfficeWasm/release.json'))
