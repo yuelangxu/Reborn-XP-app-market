@@ -1,0 +1,81 @@
+name: Reborn Office prep smoke
+
+on:
+  push:
+    branches: [row-office-prep-smoke-temp3]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax checks
+        run: |
+          set -euo pipefail
+          bash -n row-office-port/build.sh
+          bash -n row-office-port/pull_builder_image.sh
+          bash -n row-office-lok/prepare_cjk_font.sh
+          python3 -m py_compile row-office-port/patch_lo.py
+          python3 -m py_compile row-office-lok/integrate_bridge.py
+          python3 -m py_compile row-office-lok/integrate_cjk_font.py
+          node --check row-office-browser/row-office-worker-loader.js
+          node --check row-office-browser/row-office-thread.js
+          node --check row-office-browser/row-office-client.js
+          node --check row-office-browser/row-office-view.js
+
+      - name: Exercise ROW source transforms
+        run: |
+          set -euo pipefail
+          root=$(mktemp -d)
+          mkdir -p "$root/static/source/unoembindhelpers" "$root/static" "$root/desktop/source/app"
+          cat > "$root/static/StaticLibrary_unoembind.mk" <<'EOF'
+          $(eval $(call gb_StaticLibrary_StaticLibrary,unoembind))
+
+          $(eval $(call gb_StaticLibrary_add_exception_objects,unoembind, \
+              static/source/unoembindhelpers/PrimaryBindings \
+          ))
+          EOF
+          cat > "$root/static/CustomTarget_emscripten_fs_image.mk" <<'EOF'
+          gb_emscripten_fs_image_files := \
+              $(INSTROOT)/$(LIBO_SHARE_FOLDER)/fonts/truetype/fc_local.conf \
+              $(INSTROOT)/$(LIBO_SHARE_FOLDER)/gallery/fontwork.sdg \
+          EOF
+          cat > "$root/desktop/source/app/initjsunoscripting.cxx" <<'EOF'
+          #if HAVE_EMSCRIPTEN_PROXY_TO_PTHREAD
+          EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
+              globalThis.Module = globalThis.Module || Module;
+              importScripts.apply(self, Emval.toValue(handle));
+          });
+          #else
+          EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
+              const urls = Emval.toValue(handle);
+              function step() {}
+          });
+          #endif
+          EOF
+          python3 row-office-lok/integrate_bridge.py "$root"
+          python3 row-office-lok/integrate_cjk_font.py "$root"
+          grep -q 'RowLokBridge' "$root/static/StaticLibrary_unoembind.mk"
+          grep -q -- '-I$(SRCDIR)/desktop/inc' "$root/static/StaticLibrary_unoembind.mk"
+          grep -q 'NotoSansCJK-Regular.ttc' "$root/static/CustomTarget_emscripten_fs_image.mk"
+          grep -q '#elif defined ROW_EMSCRIPTEN_SINGLE_THREAD' "$root/desktop/source/app/initjsunoscripting.cxx"
+          grep -q 'importScripts.apply(self, Emval.toValue(handle))' "$root/desktop/source/app/initjsunoscripting.cxx"
+          test "$(grep -c '#elif defined ROW_EMSCRIPTEN_SINGLE_THREAD' "$root/desktop/source/app/initjsunoscripting.cxx")" -eq 1
+
+      - name: Check next-run contracts
+        run: |
+          set -euo pipefail
+          grep -q -- '--enable-ccache' row-office-port/build.sh
+          grep -q 'ROW_CCACHE_DIR' row-office-port/build.sh
+          grep -q 'Browser-native Writer acceptance' .github/workflows/row-office-core-port.yml
+          grep -q "row-office-lok/\*\*" .github/workflows/row-office-core-port.yml
+          grep -q 'cancel-in-progress: true' .github/workflows/row-office-core-port.yml
+          grep -q 'odt-roundtrip' row-office-browser/acceptance.html
+          grep -q 'docx-roundtrip' row-office-browser/acceptance.html
+          grep -q 'render-tile' row-office-browser/acceptance.html
