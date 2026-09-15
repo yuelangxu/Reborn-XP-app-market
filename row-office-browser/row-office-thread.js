@@ -100,7 +100,7 @@
       }
       xModel = undefined;
     }
-    // RowLokDocument owns a strong UNO reference.  Releasing it only after the
+    // RowLokDocument owns a strong UNO reference. Releasing it only after the
     // normal XCloseable path means its upstream destructor sees an already
     // disposed component and follows LibreOffice's own tolerant cleanup path.
     releaseLokFacade();
@@ -268,6 +268,21 @@
     return {ok: true};
   }
 
+  function lokText(payload) {
+    assertLok();
+    const text = String(payload.text || '');
+    if (text) lokDoc.postTextInput(text);
+    return {ok: true};
+  }
+
+  function lokRemoveText(payload) {
+    assertLok();
+    lokDoc.removeTextContext(
+      Math.max(0, Number(payload.before || 0) | 0),
+      Math.max(0, Number(payload.after || 0) | 0));
+    return {ok: true};
+  }
+
   function lokMouse(payload) {
     assertLok();
     lokDoc.postMouseEvent(
@@ -331,6 +346,8 @@
       case 'lok-info': return lokInfo();
       case 'render-tile': return renderTile(payload);
       case 'lok-key': return lokKey(payload);
+      case 'lok-text': return lokText(payload);
+      case 'lok-remove-text': return lokRemoveText(payload);
       case 'lok-mouse': return lokMouse(payload);
       case 'lok-uno': return lokUno(payload);
       case 'lok-visible-area': return lokVisibleArea(payload);
