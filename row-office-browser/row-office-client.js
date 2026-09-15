@@ -120,6 +120,43 @@
       return this.request('roundtrip', {format, marker});
     }
 
+    lokInfo() {
+      return this.request('lok-info');
+    }
+
+    renderTile({
+      canvasWidth = 256,
+      canvasHeight = 256,
+      xTwips = 0,
+      yTwips = 0,
+      widthTwips = canvasWidth * 15,
+      heightTwips = canvasHeight * 15
+    } = {}) {
+      return this.request('render-tile', {
+        canvasWidth, canvasHeight, xTwips, yTwips, widthTwips, heightTwips
+      });
+    }
+
+    postLokKey(type, charCode = 0, keyCode = 0) {
+      return this.request('lok-key', {type, charCode, keyCode});
+    }
+
+    postLokMouse(type, xTwips, yTwips, count = 1, buttons = 0, modifiers = 0) {
+      return this.request('lok-mouse', {type, xTwips, yTwips, count, buttons, modifiers});
+    }
+
+    postUnoCommand(command, args = '', notifyWhenFinished = false) {
+      return this.request('lok-uno', {command, args, notifyWhenFinished});
+    }
+
+    setLokVisibleArea(xTwips, yTwips, widthTwips, heightTwips) {
+      return this.request('lok-visible-area', {xTwips, yTwips, widthTwips, heightTwips});
+    }
+
+    lokSelection() {
+      return this.request('lok-selection');
+    }
+
     closeDocument() {
       return this.request('close');
     }
