@@ -8,6 +8,7 @@
 
 #if defined __EMSCRIPTEN__
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -31,7 +32,7 @@ namespace
 {
 EM_JS(void, rowLokEmitCallback, (int type, const char* payload), {
     const text = payload ? UTF8ToString(payload) : '';
-    if (typeof self !== 'undefined' && typeof self.postMessage === 'function') {
+    if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
         self.postMessage({
             rowOffice: true,
             kind: 'lok-callback',
@@ -40,6 +41,16 @@ EM_JS(void, rowLokEmitCallback, (int type, const char* payload), {
         });
     }
 });
+
+std::uint8_t unpremultiply(std::uint8_t channel, std::uint8_t alpha)
+{
+    if (alpha == 0)
+        return 0;
+    if (alpha == 255)
+        return channel;
+    const unsigned value = (static_cast<unsigned>(channel) * 255u + alpha / 2u) / alpha;
+    return static_cast<std::uint8_t>(std::min(value, 255u));
+}
 
 class RowLokDocument final
 {
@@ -102,10 +113,12 @@ public:
         return result;
     }
 
+    // ROW always exports straight (un-premultiplied) RGBA bytes to JavaScript,
+    // independent of LibreOffice's native RGBA/BGRA tile mode.
     int tileMode()
     {
         requireDocument();
-        return m_document->pClass->getTileMode(m_document.get());
+        return LOK_TILEMODE_RGBA;
     }
 
     emscripten::val paintTile(
@@ -128,6 +141,7 @@ public:
             throw std::invalid_argument("ROW_LOK_TILE_ALLOCATION_TOO_LARGE");
 
         m_tile.resize(pixels * 4u);
+        const int nativeMode = m_document->pClass->getTileMode(m_document.get());
         m_document->pClass->paintTile(
             m_document.get(),
             m_tile.data(),
@@ -138,8 +152,35 @@ public:
             tileWidthTwips,
             tileHeightTwips);
 
+        if (nativeMode != LOK_TILEMODE_RGBA && nativeMode != LOK_TILEMODE_BGRA)
+            throw std::runtime_error("ROW_LOK_UNKNOWN_NATIVE_TILE_MODE");
+
+        for (std::size_t i = 0; i < m_tile.size(); i += 4)
+        {
+            const std::uint8_t alpha = m_tile[i + 3];
+            const std::uint8_t native0 = m_tile[i + 0];
+            const std::uint8_t native1 = m_tile[i + 1];
+            const std::uint8_t native2 = m_tile[i + 2];
+            const std::uint8_t red = nativeMode == LOK_TILEMODE_RGBA ? native0 : native2;
+            const std::uint8_t green = native1;
+            const std::uint8_t blue = nativeMode == LOK_TILEMODE_RGBA ? native2 : native0;
+            m_tile[i + 0] = unpremultiply(red, alpha);
+            m_tile[i + 1] = unpremultiply(green, alpha);
+            m_tile[i + 2] = unpremultiply(blue, alpha);
+        }
+
         return emscripten::val(
             emscripten::typed_memory_view(m_tile.size(), m_tile.data()));
+    }
+
+    void setClientZoom(int pixelWidth, int pixelHeight, int twipWidth, int twipHeight)
+    {
+        requireDocument();
+        if (pixelWidth <= 0 || pixelHeight <= 0 || twipWidth <= 0 || twipHeight <= 0)
+            throw std::invalid_argument("ROW_LOK_BAD_CLIENT_ZOOM");
+        m_document->pClass->setClientZoom(
+            m_document.get(), pixelWidth, pixelHeight, twipWidth, twipHeight);
+        Scheduler::ProcessEventsToIdle();
     }
 
     int viewId()
@@ -272,6 +313,7 @@ EMSCRIPTEN_BINDINGS(row_lok_bridge)
         .function("pageRectangles", &RowLokDocument::pageRectangles)
         .function("tileMode", &RowLokDocument::tileMode)
         .function("paintTile", &RowLokDocument::paintTile)
+        .function("setClientZoom", &RowLokDocument::setClientZoom)
         .function("viewId", &RowLokDocument::viewId)
         .function("createView", &RowLokDocument::createView)
         .function("setView", &RowLokDocument::setView)
