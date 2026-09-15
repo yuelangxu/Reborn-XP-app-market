@@ -35,6 +35,7 @@ jobs:
           python3 -m py_compile row-office-lok/integrate_bridge.py
           python3 -m py_compile row-office-lok/integrate_cjk_font.py
           python3 -m py_compile row-office-browser/build-reborn-package.py
+          python3 -m py_compile row-office-browser/canonicalize-reborn-zip.py
 
       - name: Exercise gbuild and UNO script transforms
         run: |
@@ -111,20 +112,29 @@ jobs:
           set -euo pipefail
           tmp=$(mktemp -d)
           runtime="$tmp/runtime-tree"
-          mkdir -p "$runtime/runtime" "$runtime/vendor" "$tmp/out"
+          mkdir -p "$runtime/runtime" "$runtime/vendor" "$tmp/out1" "$tmp/out2"
           printf 'mock-js\n' > "$runtime/runtime/soffice.js"
           printf '\0asm-mock\n' > "$runtime/runtime/soffice.wasm"
           printf 'mock-data\n' > "$runtime/runtime/soffice.data"
           printf '{}\n' > "$runtime/runtime/soffice.data.js.metadata"
-          cp row-office-browser/vendor/zeta.js "$runtime/vendor/zeta.js"
+          printf 'globalThis.zetajsMock=true;\n' > "$runtime/vendor/zeta.js"
           cp row-office-browser/row-office-client.js "$runtime/"
           cp row-office-browser/row-office-view.js "$runtime/"
           cp row-office-browser/row-office-worker-loader.js "$runtime/"
           cp row-office-browser/row-office-thread.js "$runtime/"
           cp row-office-browser/reborn-office.js "$runtime/"
-          python3 row-office-browser/build-reborn-package.py \
-            "$runtime" "$tmp/out" --source-sha smoke --accepted
-          python3 - "$tmp/out/RebornOfficeWasm-browser-native.zip" <<'PY'
+
+          for out in "$tmp/out1" "$tmp/out2"; do
+            python3 row-office-browser/build-reborn-package.py \
+              "$runtime" "$out" --source-sha smoke --accepted
+            python3 row-office-browser/canonicalize-reborn-zip.py \
+              "$out/RebornOfficeWasm-browser-native.zip"
+          done
+          sha1=$(sha256sum "$tmp/out1/RebornOfficeWasm-browser-native.zip" | cut -d' ' -f1)
+          sha2=$(sha256sum "$tmp/out2/RebornOfficeWasm-browser-native.zip" | cut -d' ' -f1)
+          test "$sha1" = "$sha2"
+
+          python3 - "$tmp/out1/RebornOfficeWasm-browser-native.zip" <<'PY'
           import hashlib, json, sys, zipfile
           from pathlib import PurePosixPath
           path = sys.argv[1]
