@@ -198,6 +198,25 @@ CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE ma
 rc=${PIPESTATUS[0]}
 if [ "$rc" -ne 0 ]; then exit "$rc"; fi
 
+# The CJK font is downloaded outside instdir so configure/build setup cannot
+# accidentally delete it. Install the verified pinned asset immediately before
+# the real build creates the Emscripten filesystem image.
+ROW_CJK_FONT=/build/row-assets/NotoSansCJK-Regular.ttc
+if [ -f "$ROW_CJK_FONT" ]; then
+  ROW_CJK_DEST=/build/instdir/share/fonts/truetype/NotoSansCJK-Regular.ttc
+  mkdir -p "$(dirname "$ROW_CJK_DEST")"
+  cp "$ROW_CJK_FONT" "$ROW_CJK_DEST"
+  expected_blob=a2033f163659aeab49c4d54aac59fe770ad05552
+  actual_blob=$(git hash-object "$ROW_CJK_DEST")
+  if [ "$actual_blob" != "$expected_blob" ]; then
+    log "[ROW] ERROR: staged CJK font changed before install: $actual_blob"
+    exit 87
+  fi
+  log "[ROW] installed verified NotoSansCJK-Regular.ttc into instdir"
+else
+  log "[ROW] WARNING: no staged CJK font found at $ROW_CJK_FONT"
+fi
+
 log "[ROW] full headless Writer build"
 CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make -rj2 2>&1 | tee -a row-build.log
 build_rc=${PIPESTATUS[0]}
