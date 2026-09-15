@@ -5,6 +5,7 @@ BUILD=${BUILD:-$PWD/lo-build}
 TARBALLS=${TARBALLS:-$PWD/lo-tarballs}
 PORT=${PORT:-$PWD/row-office-port}
 IMAGE=${IMAGE:-public.ecr.aws/allotropia/libo-builders/wasm}
+HOST_PYTHON=${HOST_PYTHON:-}
 mkdir -p "$BUILD" "$TARBALLS"
 python3 "$PORT/patch_lo.py" "$SRC"
 cat > "$BUILD/autogen.input" <<EOF
@@ -28,12 +29,20 @@ cat > "$BUILD/autogen.input" <<EOF
 EOF
 
 docker pull "$IMAGE"
+PYMOUNT=()
+PYENV=()
+if [ -n "$HOST_PYTHON" ] && [ -x "$HOST_PYTHON/bin/python3" ]; then
+  PYMOUNT=(-v "$HOST_PYTHON:/opt/row-python:ro")
+  PYENV=(-e ROW_PYTHON=/opt/row-python/bin/python3)
+fi
 set +e
 docker run --rm \
   -v "$SRC:/src:rw" \
   -v "$BUILD:/build:rw" \
   -v "$TARBALLS:/ext_sources:rw" \
+  "${PYMOUNT[@]}" \
   -e ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE \
+  "${PYENV[@]}" \
   "$IMAGE" /bin/bash -lc '
     set -o pipefail
     source /home/builder/emsdk/emsdk_env.sh
@@ -41,6 +50,14 @@ docker run --rm \
     echo "[ROW] native compiler probe" | tee row-build.log
     command -v clang | tee -a row-build.log
     clang --version | head -n 3 | tee -a row-build.log
+    if [ -n "${ROW_PYTHON:-}" ]; then
+      export PATH=/opt/row-python/bin:$PATH
+      export LD_LIBRARY_PATH=/opt/row-python/lib:${LD_LIBRARY_PATH:-}
+      export PYTHON_FOR_BUILD="$ROW_PYTHON"
+      export PYTHON="$ROW_PYTHON"
+      echo "[ROW] mounted Python probe" | tee -a row-build.log
+      "$ROW_PYTHON" --version 2>&1 | tee -a row-build.log
+    fi
     echo "[ROW] configure" | tee -a row-build.log
     CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE /src/autogen.sh 2>&1 | tee -a row-build.log
     rc=${PIPESTATUS[0]}
