@@ -1,0 +1,42 @@
+name: Reborn Office browser bridge smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-core-port]
+    paths:
+      - '.github/workflows/row-office-browser-smoke.yml'
+      - 'row-office-browser/**'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: row-office-core-port
+
+      - name: JavaScript syntax
+        run: |
+          node --check row-office-browser/row-office-client.js
+          node --check row-office-browser/row-office-worker-loader.js
+          node --check row-office-browser/row-office-thread.js
+          node --check row-office-browser/reborn-office.js
+
+      - name: Single-thread architecture guards
+        run: |
+          set -euo pipefail
+          ! grep -R -nE 'new SharedArrayBuffer|Atomics\.' row-office-browser
+          ! grep -R -nE 'PROXY_TO_PTHREAD|PThread\.pthreads' row-office-browser
+          grep -q "new Worker" row-office-browser/row-office-client.js
+          grep -q "sharedMemory" row-office-browser/row-office-thread.js
+          grep -q "dm\.readFile" row-office-browser/reborn-office.js
+          grep -q "dm\.writeFile" row-office-browser/reborn-office.js
+
+      - name: Describe bridge footprint
+        run: |
+          wc -c row-office-browser/*.js
+          sha256sum row-office-browser/*.js
