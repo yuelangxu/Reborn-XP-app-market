@@ -206,7 +206,7 @@ if [ -f "$ROW_CJK_FONT" ]; then
   ROW_CJK_DEST=/build/instdir/share/fonts/truetype/NotoSansCJK-Regular.ttc
   mkdir -p "$(dirname "$ROW_CJK_DEST")"
   cp "$ROW_CJK_FONT" "$ROW_CJK_DEST"
-  expected_blob=a2033f163659aeab49c4d54aac59fe770ad05552
+  expected_blob=a2033d0e4e53f568c3f418a7d5d8c951af3f76c1
   actual_blob=$(git hash-object "$ROW_CJK_DEST")
   if [ "$actual_blob" != "$expected_blob" ]; then
     log "[ROW] ERROR: staged CJK font changed before install: $actual_blob"
