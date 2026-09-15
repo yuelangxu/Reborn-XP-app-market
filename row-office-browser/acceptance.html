@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reborn Office Runtime Acceptance</title>
+<pre id="result" data-status="running">starting</pre>
+<script src="./row-office-client.js"></script>
+<script>
+'use strict';
+
+(async () => {
+  const out = document.getElementById('result');
+  const log = [];
+  const marker = '你好 Reborn Office WASM ✓';
+  let client;
+
+  function record(name, value) {
+    const entry = {name, value};
+    log.push(entry);
+    out.textContent = JSON.stringify({status: 'running', log}, null, 2);
+  }
+
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+
+  try {
+    assert(typeof RowOfficeClient === 'function', 'RowOfficeClient is missing');
+    client = new RowOfficeClient('./row-office-worker-loader.js');
+    const ready = await client.ready;
+    record('ready', ready);
+    assert(ready.sharedMemory === false, 'WASM memory is shared');
+    assert(ready.lokBridge === true, 'ROW LOK bridge is missing');
+
+    const odt = await client.roundTrip('odt', marker + ' ODT');
+    record('odt-roundtrip', {pass: odt.pass, bytes: odt.byteLength, reopened: odt.reopened});
+    assert(odt.pass, 'ODT round-trip marker mismatch');
+    assert(odt.byteLength > 100, 'ODT output is implausibly small');
+
+    const docx = await client.roundTrip('docx', marker + ' DOCX');
+    record('docx-roundtrip', {pass: docx.pass, bytes: docx.byteLength, reopened: docx.reopened});
+    assert(docx.pass, 'DOCX round-trip marker mismatch');
+    assert(docx.byteLength > 100, 'DOCX output is implausibly small');
+
+    await client.newWriter();
+    await client.postTextInput(marker + ' IME');
+    const text = await client.readText();
+    record('text-input', text);
+    assert(text.text.includes(marker + ' IME'), 'LOK text input did not reach Writer model');
+
+    const info = await client.lokInfo();
+    record('lok-info', info);
+    assert(info.widthTwips > 0 && info.heightTwips > 0, 'LOK document size is invalid');
+
+    const tile = await client.renderTile({
+      canvasWidth: 128,
+      canvasHeight: 128,
+      xTwips: 0,
+      yTwips: 0,
+      widthTwips: Math.min(info.widthTwips, 128 * 15),
+      heightTwips: Math.min(info.heightTwips, 128 * 15)
+    });
+    const pixels = new Uint8Array(tile.rgba);
+    let nonZero = 0;
+    let alpha = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      if (pixels[i] || pixels[i + 1] || pixels[i + 2] || pixels[i + 3]) nonZero += 1;
+      if (pixels[i + 3]) alpha += 1;
+    }
+    record('tile', {bytes: pixels.byteLength, nonZeroPixels: nonZero, alphaPixels: alpha});
+    assert(pixels.byteLength === 128 * 128 * 4, 'LOK tile byte size mismatch');
+    assert(nonZero > 128, 'LOK tile is effectively empty');
+
+    const finalResult = {status: 'pass', marker, log};
+    out.dataset.status = 'pass';
+    out.textContent = JSON.stringify(finalResult, null, 2);
+    document.title = 'ROW_ACCEPTANCE_PASS';
+    console.log('ROW_ACCEPTANCE_PASS', finalResult);
+  } catch (error) {
+    const failure = {
+      status: 'fail',
+      message: error && error.message ? error.message : String(error),
+      stack: error && error.stack ? String(error.stack) : '',
+      log
+    };
+    out.dataset.status = 'fail';
+    out.textContent = JSON.stringify(failure, null, 2);
+    document.title = 'ROW_ACCEPTANCE_FAIL';
+    console.error('ROW_ACCEPTANCE_FAIL', failure);
+  } finally {
+    if (client) client.terminate();
+  }
+})();
+</script>
