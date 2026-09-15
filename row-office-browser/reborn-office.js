@@ -108,6 +108,16 @@
     throw new Error('Unsupported Reborn VFS payload type');
   }
 
+  function bytesEqual(a, b) {
+    const left = new Uint8Array(a);
+    const right = new Uint8Array(b);
+    if (left.byteLength !== right.byteLength) return false;
+    for (let i = 0; i < left.byteLength; ++i) {
+      if (left[i] !== right[i]) return false;
+    }
+    return true;
+  }
+
   function loadClassicScript(url, globalName) {
     return new Promise((resolve, reject) => {
       if (globalName && globalThis[globalName]) return resolve();
@@ -326,7 +336,12 @@
       const format = exportFormat(path);
       this._setStatus(`Saving ${dm.basename(path)}...`);
       const result = await this._client.save(format, dm.basename(path));
-      await dm.writeFile(path, new Blob([result.bytes], {type: 'application/octet-stream'}));
+      const expected = await blobToArrayBuffer(result.bytes);
+      await dm.writeFile(path, new Blob([expected], {type: 'application/octet-stream'}));
+      const persisted = await blobToArrayBuffer(await dm.readFile(path));
+      if (!bytesEqual(expected, persisted)) {
+        throw new Error(`Reborn VFS write verification failed for ${path}`);
+      }
       if (format !== 'pdf') {
         this._currentPath = path;
         this._updateCaption();
