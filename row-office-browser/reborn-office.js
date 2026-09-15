@@ -1,9 +1,5 @@
 /* Reborn Office for Reborn XP.
- *
- * This file is the thin OS integration layer.  LibreOffice itself lives in a
- * single DedicatedWorker and operates on bytes transferred to/from the Reborn
- * virtual filesystem.  The document rendering surface is deliberately isolated
- * so the LibreOfficeKit renderer can replace it without changing file I/O.
+ * LibreOffice runs inside one ordinary DedicatedWorker with private WASM memory.
  */
 (function () {
   'use strict';
@@ -42,7 +38,17 @@
           </li>
           <li>Edit
             <ul class="submenu">
+              <li data-row-action="undo">Undo</li>
+              <li data-row-action="redo">Redo</li>
+              <li class="divider"></li>
               <li data-row-action="selectall">Select All</li>
+            </ul>
+          </li>
+          <li>Format
+            <ul class="submenu">
+              <li data-row-action="bold">Bold</li>
+              <li data-row-action="italic">Italic</li>
+              <li data-row-action="underline">Underline</li>
             </ul>
           </li>
           <li>Help
@@ -52,12 +58,23 @@
           </li>
         </ul>
       </appnavigation>
-      <div class="row-office-toolbar" style="display:flex;gap:4px;padding:4px;border-bottom:1px solid #808080;">
+      <div class="row-office-toolbar" style="display:flex;align-items:center;gap:4px;padding:4px;border-bottom:1px solid #808080;">
         <button type="button" data-row-action="new">New</button>
         <button type="button" data-row-action="open">Open</button>
         <button type="button" data-row-action="save">Save</button>
+        <span style="width:1px;height:20px;background:#888;margin:0 3px;"></span>
+        <button type="button" data-row-action="undo">Undo</button>
+        <button type="button" data-row-action="redo">Redo</button>
+        <span style="width:1px;height:20px;background:#888;margin:0 3px;"></span>
+        <button type="button" data-row-action="bold"><b>B</b></button>
+        <button type="button" data-row-action="italic"><i>I</i></button>
+        <button type="button" data-row-action="underline"><u>U</u></button>
+        <span style="flex:1"></span>
+        <button type="button" data-row-action="zoomout">−</button>
+        <span data-row-role="zoom">100%</span>
+        <button type="button" data-row-action="zoomin">+</button>
       </div>
-      <div class="row-office-surface" style="position:relative;flex:1;overflow:auto;background:#808080;padding:24px;">
+      <div class="row-office-surface" style="position:relative;flex:1;min-height:0;overflow:auto;background:#808080;padding:24px;">
         <div class="row-office-engine-card" style="box-sizing:border-box;max-width:760px;min-height:480px;margin:0 auto;background:white;box-shadow:0 0 0 1px #555;padding:32px;font-family:Tahoma,Arial,sans-serif;">
           <h3 style="margin-top:0;font-weight:normal;">LibreOffice Writer</h3>
           <p data-row-role="message">Starting LibreOffice Technology WASM engine...</p>
@@ -91,10 +108,15 @@
     throw new Error('Unsupported Reborn VFS payload type');
   }
 
-  function loadClassicScript(url) {
+  function loadClassicScript(url, globalName) {
     return new Promise((resolve, reject) => {
+      if (globalName && globalThis[globalName]) return resolve();
       const old = Array.from(document.scripts).find((script) => script.src === url);
-      if (old && globalThis.RowOfficeClient) return resolve();
+      if (old) {
+        old.addEventListener('load', resolve, {once: true});
+        old.addEventListener('error', () => reject(new Error(`Failed to load ${url}`)), {once: true});
+        return;
+      }
       const script = document.createElement('script');
       script.src = url;
       script.async = true;
@@ -109,9 +131,11 @@
     _hWnd: null,
     _contents: null,
     _client: null,
+    _view: null,
     _currentPath: null,
     _installPath: null,
     _engineInfo: null,
+    _zoom: 1,
 
     setup: async function () {
       this._template = document.createElement('template');
@@ -136,8 +160,11 @@
 
       try {
         const clientUrl = dm.getVfsUrl(dm.join(this._installPath, 'row-office-client.js'));
+        const viewUrl = dm.getVfsUrl(dm.join(this._installPath, 'row-office-view.js'));
         const workerUrl = dm.getVfsUrl(dm.join(this._installPath, 'row-office-worker-loader.js'));
-        await loadClassicScript(clientUrl);
+        await loadClassicScript(clientUrl, 'RowOfficeClient');
+        await loadClassicScript(viewUrl, 'RowOfficeCanvasView');
+
         this._client = new globalThis.RowOfficeClient(workerUrl);
         this._client.on('stdout', (m) => console.log('[ROW]', m.text));
         this._client.on('stderr', (m) => console.warn('[ROW]', m.text));
@@ -149,14 +176,18 @@
         if (this._engineInfo.sharedMemory) {
           throw new Error('ROW invariant failed: LibreOffice WASM memory is shared');
         }
-        this._setMessage('LibreOffice Technology engine ready. LibreOfficeKit page rendering is the next bridge attached to this surface.');
-        this._setStatus('Ready');
 
         if (options.filePath && !options.filePath.toLowerCase().endsWith('.exe')) {
           await this.loadFile(options.filePath);
         } else {
           await this._client.newWriter();
         }
+
+        if (!this._engineInfo.lokBridge) {
+          throw new Error('LibreOffice started, but the ROW LibreOfficeKit bridge is not present in this runtime.');
+        }
+        await this._mountView();
+        this._setStatus('Ready');
       } catch (error) {
         console.error(error);
         this._showEngineError(error.message || String(error));
@@ -165,7 +196,9 @@
       const hostWindow = wm._windows[this._hWnd];
       if (hostWindow) {
         hostWindow.addEventListener('wm:windowClosed', () => {
+          if (this._view) this._view.destroy();
           if (this._client) this._client.terminate();
+          this._view = null;
           this._client = null;
           this._contents = null;
           this._hWnd = null;
@@ -174,23 +207,57 @@
       return this._hWnd;
     },
 
+    _mountView: async function () {
+      const surface = this._contents.querySelector('.row-office-surface');
+      if (this._view) this._view.destroy();
+      this._view = new globalThis.RowOfficeCanvasView(this._client, surface, {zoom: this._zoom});
+      await this._view.mount();
+      this._updateZoomLabel();
+    },
+
     _bindActions: function () {
-      this._contents.querySelectorAll('[data-row-action="new"]').forEach((node) => {
-        node.onclick = () => this.newDocument();
-      });
-      this._contents.querySelectorAll('[data-row-action="open"]').forEach((node) => {
-        node.onclick = () => this.openDialog();
-      });
-      this._contents.querySelectorAll('[data-row-action="save"]').forEach((node) => {
-        node.onclick = () => this.saveDocument(false);
-      });
+      const bindAll = (action, fn) => {
+        this._contents.querySelectorAll(`[data-row-action="${action}"]`).forEach((node) => {
+          node.onclick = fn;
+        });
+      };
+      bindAll('new', () => this.newDocument());
+      bindAll('open', () => this.openDialog());
+      bindAll('save', () => this.saveDocument(false));
+      bindAll('undo', () => this._command('.uno:Undo'));
+      bindAll('redo', () => this._command('.uno:Redo'));
+      bindAll('bold', () => this._command('.uno:Bold'));
+      bindAll('italic', () => this._command('.uno:Italic'));
+      bindAll('underline', () => this._command('.uno:Underline'));
+      bindAll('selectall', () => this._command('.uno:SelectAll'));
+      bindAll('zoomin', () => this._changeZoom(1.1));
+      bindAll('zoomout', () => this._changeZoom(1 / 1.1));
       this._contents.querySelector('[data-row-action="saveas"]').onclick = () => this.saveDocument(true);
       this._contents.querySelector('[data-row-action="exit"]').onclick = () => wm.closeWindow(this._hWnd);
       this._contents.querySelector('[data-row-action="engine"]').onclick = () => this.showEngineStatus();
-      this._contents.querySelector('[data-row-action="selectall"]').onclick = () => {
-        // This command is intentionally a no-op until the LOK view bridge owns
-        // the active selection. File I/O and engine lifetime do not depend on it.
-      };
+    },
+
+    _command: async function (command) {
+      if (!this._view) return;
+      try {
+        await this._view.command(command);
+        this._view.focus();
+      } catch (error) {
+        console.error('[ROW command]', command, error);
+      }
+    },
+
+    _changeZoom: async function (factor) {
+      if (!this._view) return;
+      this._zoom = Math.min(Math.max(this._zoom * factor, 0.25), 4);
+      await this._view.setZoom(this._zoom);
+      this._updateZoomLabel();
+      this._view.focus();
+    },
+
+    _updateZoomLabel: function () {
+      const node = this._contents && this._contents.querySelector('[data-row-role="zoom"]');
+      if (node) node.textContent = `${Math.round(this._zoom * 100)}%`;
     },
 
     _setStatus: function (text) {
@@ -225,7 +292,9 @@
       await this._client.newWriter();
       this._currentPath = null;
       this._updateCaption();
+      if (this._view) await this._view.reloadDocument();
       this._setStatus('Ready');
+      if (this._view) this._view.focus();
     },
 
     openDialog: async function () {
@@ -241,7 +310,9 @@
       await this._client.openBytes(dm.basename(path), bytes);
       this._currentPath = path;
       this._updateCaption();
+      if (this._view) await this._view.reloadDocument();
       this._setStatus('Ready');
+      if (this._view) this._view.focus();
     },
 
     saveDocument: async function (saveAs) {
@@ -261,6 +332,7 @@
         this._updateCaption();
       }
       this._setStatus('Ready');
+      if (this._view) this._view.focus();
       return true;
     },
 
@@ -272,6 +344,7 @@
         text: [
           'LibreOffice Technology (WebAssembly)',
           `Execution: ${info.execution || 'not ready'}`,
+          `LibreOfficeKit bridge: ${info.lokBridge ? 'active' : 'missing'}`,
           `Shared memory: ${info.sharedMemory ? 'YES (invalid)' : 'No'}`,
           'Native server/process: none'
         ].join('<br>')
