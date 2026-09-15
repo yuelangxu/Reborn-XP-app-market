@@ -29,7 +29,7 @@ jobs:
           path: lo-transform-smoke
           fetch-depth: 1
 
-      - name: Script syntax
+      - name: Script syntax and VFS durability
         run: |
           set -euo pipefail
           node --check row-office-browser/row-office-client.js
@@ -37,6 +37,7 @@ jobs:
           node --check row-office-browser/row-office-thread.js
           node --check row-office-browser/row-office-view.js
           node --check row-office-browser/reborn-office.js
+          node row-office-browser/test-reborn-vfs-save.js
           bash -n row-office-browser/prepare-runtime-tree.sh
           bash -n row-office-lok/prepare_cjk_font.sh
           bash -n row-office-port/build.sh
