@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include <emscripten.h>
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
@@ -28,6 +29,18 @@
 
 namespace
 {
+EM_JS(void, rowLokEmitCallback, (int type, const char* payload), {
+    const text = payload ? UTF8ToString(payload) : '';
+    if (typeof self !== 'undefined' && typeof self.postMessage === 'function') {
+        self.postMessage({
+            rowOffice: true,
+            kind: 'lok-callback',
+            callbackType: type,
+            payload: text
+        });
+    }
+});
+
 class RowLokDocument final
 {
 public:
@@ -47,6 +60,13 @@ public:
             throw std::runtime_error("ROW_LOK_INVALID_DOCUMENT_ID");
 
         m_document = std::make_unique<desktop::LibLODocument_Impl>(xComponent, nDocId);
+        m_document->pClass->registerCallback(m_document.get(), &RowLokDocument::callback, this);
+    }
+
+    ~RowLokDocument()
+    {
+        if (m_document && m_document->pClass)
+            m_document->pClass->registerCallback(m_document.get(), nullptr, nullptr);
     }
 
     bool valid() const { return m_document && m_document->pClass; }
@@ -56,6 +76,7 @@ public:
         requireDocument();
         m_document->pClass->initializeForRendering(
             m_document.get(), args.empty() ? nullptr : args.c_str());
+        Scheduler::ProcessEventsToIdle();
     }
 
     emscripten::val documentSize()
@@ -130,19 +151,23 @@ public:
     int createView()
     {
         requireDocument();
-        return m_document->pClass->createView(m_document.get());
+        const int result = m_document->pClass->createView(m_document.get());
+        Scheduler::ProcessEventsToIdle();
+        return result;
     }
 
     void setView(int viewId)
     {
         requireDocument();
         m_document->pClass->setView(m_document.get(), viewId);
+        Scheduler::ProcessEventsToIdle();
     }
 
     void postKeyEvent(int type, int charCode, int keyCode)
     {
         requireDocument();
         m_document->pClass->postKeyEvent(m_document.get(), type, charCode, keyCode);
+        Scheduler::ProcessEventsToIdle();
     }
 
     void postTextInput(const std::string& text)
@@ -152,12 +177,14 @@ public:
             m_document.get(), 0, LOK_EXT_TEXTINPUT, text.c_str());
         m_document->pClass->postWindowExtTextInputEvent(
             m_document.get(), 0, LOK_EXT_TEXTINPUT_END, text.c_str());
+        Scheduler::ProcessEventsToIdle();
     }
 
     void removeTextContext(int before, int after)
     {
         requireDocument();
         m_document->pClass->removeTextContext(m_document.get(), 0, before, after);
+        Scheduler::ProcessEventsToIdle();
     }
 
     void postMouseEvent(int type, int xTwips, int yTwips, int count, int buttons, int modifiers)
@@ -165,6 +192,7 @@ public:
         requireDocument();
         m_document->pClass->postMouseEvent(
             m_document.get(), type, xTwips, yTwips, count, buttons, modifiers);
+        Scheduler::ProcessEventsToIdle();
     }
 
     void postUnoCommand(const std::string& command, const std::string& args, bool notifyWhenFinished)
@@ -175,12 +203,14 @@ public:
             command.c_str(),
             args.empty() ? nullptr : args.c_str(),
             notifyWhenFinished);
+        Scheduler::ProcessEventsToIdle();
     }
 
     void setTextSelection(int type, int xTwips, int yTwips)
     {
         requireDocument();
         m_document->pClass->setTextSelection(m_document.get(), type, xTwips, yTwips);
+        Scheduler::ProcessEventsToIdle();
     }
 
     void setClientVisibleArea(int xTwips, int yTwips, int widthTwips, int heightTwips)
@@ -203,6 +233,11 @@ public:
     }
 
 private:
+    static void callback(int type, const char* payload, void*)
+    {
+        rowLokEmitCallback(type, payload);
+    }
+
     void requireDocument() const
     {
         if (!valid())
