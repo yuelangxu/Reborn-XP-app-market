@@ -10,7 +10,20 @@ RUNTIME_DIR=$(cd "$1" && pwd)
 OUT=$2
 HERE=$(cd "$(dirname "$0")" && pwd)
 ZETA_COMMIT=b3dec98af5dc4c059a260afd6db0bf0fe38c6384
+ZETA_BLOB=acec1ab8b059adc92eace78a4bbfc4e0814ca7ff
+ZETA_LICENSE_BLOB=d76b2f3a46f96e8a5d587c5c47361964f1432ab3
 NOTO_CJK_COMMIT=f8d157532fbfaeda587e826d4cd5b21a49186f7c
+NOTO_LICENSE_BLOB=d952d62c065f3f35fb83a173496e90b21525aef3
+
+verify_blob() {
+  local path=$1 expected=$2 label=$3
+  local actual
+  actual=$(git hash-object "$path")
+  if [ "$actual" != "$expected" ]; then
+    echo "$label blob mismatch: expected $expected, got $actual" >&2
+    exit 65
+  fi
+}
 
 rm -rf "$OUT"
 mkdir -p "$OUT/runtime" "$OUT/vendor" "$OUT/THIRD_PARTY_LICENSES"
@@ -34,6 +47,7 @@ else
     "https://raw.githubusercontent.com/allotropia/zetajs/${ZETA_COMMIT}/source/zeta.js" \
     -o "$OUT/vendor/zeta.js"
 fi
+verify_blob "$OUT/vendor/zeta.js" "$ZETA_BLOB" "ZetaJS source"
 
 if [ -n "${ZETAJS_LICENSE_SOURCE:-}" ]; then
   cp "$ZETAJS_LICENSE_SOURCE" "$OUT/THIRD_PARTY_LICENSES/ZetaJS-MIT.txt"
@@ -42,6 +56,7 @@ else
     "https://raw.githubusercontent.com/allotropia/zetajs/${ZETA_COMMIT}/LICENSE" \
     -o "$OUT/THIRD_PARTY_LICENSES/ZetaJS-MIT.txt"
 fi
+verify_blob "$OUT/THIRD_PARTY_LICENSES/ZetaJS-MIT.txt" "$ZETA_LICENSE_BLOB" "ZetaJS license"
 
 if [ -n "${NOTO_CJK_LICENSE_SOURCE:-}" ]; then
   cp "$NOTO_CJK_LICENSE_SOURCE" "$OUT/THIRD_PARTY_LICENSES/NotoSansCJK-OFL-1.1.txt"
@@ -50,6 +65,7 @@ else
     "https://raw.githubusercontent.com/notofonts/noto-cjk/${NOTO_CJK_COMMIT}/Sans/LICENSE" \
     -o "$OUT/THIRD_PARTY_LICENSES/NotoSansCJK-OFL-1.1.txt"
 fi
+verify_blob "$OUT/THIRD_PARTY_LICENSES/NotoSansCJK-OFL-1.1.txt" "$NOTO_LICENSE_BLOB" "Noto CJK license"
 
 python3 - "$OUT" "$ZETA_COMMIT" "$NOTO_CJK_COMMIT" <<'PY'
 import hashlib
