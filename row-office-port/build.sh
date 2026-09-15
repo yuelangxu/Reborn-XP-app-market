@@ -6,7 +6,11 @@ TARBALLS=${TARBALLS:-$PWD/lo-tarballs}
 PORT=${PORT:-$PWD/row-office-port}
 IMAGE=${IMAGE:-public.ecr.aws/allotropia/libo-builders/wasm}
 HOST_PYTHON=${HOST_PYTHON:-}
+ROW_CCACHE_DIR=${ROW_CCACHE_DIR:-}
 mkdir -p "$BUILD" "$TARBALLS"
+if [ -n "$ROW_CCACHE_DIR" ]; then
+  mkdir -p "$ROW_CCACHE_DIR"
+fi
 python3 "$PORT/patch_lo.py" "$SRC"
 cat > "$BUILD/autogen.input" <<EOF
 --disable-debug
@@ -22,11 +26,11 @@ cat > "$BUILD/autogen.input" <<EOF
 --with-package-format=emscripten
 --without-java
 --without-help
---disable-ccache
+--enable-ccache
 --disable-dynamic-loading
 --enable-customtarget-components
 --with-external-tar=/ext_sources
---with-build-platform-configure-options=--disable-ccache
+--with-build-platform-configure-options=--enable-ccache
 EOF
 
 # Keep the container payload in a real script file. The previous inline
@@ -64,6 +68,24 @@ else
 fi
 
 source /home/builder/emsdk/emsdk_env.sh
+
+# Use a persistent ccache directory when the workflow mounted one. If an older
+# builder image unexpectedly lacks ccache, fall back to a non-ccache configure
+# rather than turning a performance optimization into a build blocker.
+if command -v ccache >/dev/null 2>&1 && [ "${ROW_CCACHE_ACTIVE:-0}" = "1" ]; then
+  export CCACHE_DIR=${CCACHE_DIR:-/row-ccache}
+  export CCACHE_BASEDIR=${CCACHE_BASEDIR:-/src}
+  export CCACHE_COMPILERCHECK=${CCACHE_COMPILERCHECK:-content}
+  export CCACHE_NOHASHDIR=true
+  mkdir -p "$CCACHE_DIR"
+  ccache --version 2>&1 | head -n 2 | tee -a row-build.log || true
+  ccache -M 4G 2>&1 | tee -a row-build.log || true
+  ccache -z 2>&1 | tee -a row-build.log || true
+  log "[ROW] persistent ccache enabled at $CCACHE_DIR"
+else
+  log "[ROW] ccache unavailable; falling back to uncached build"
+  sed -i 's/--enable-ccache/--disable-ccache/g' /build/autogen.input
+fi
 
 # Diagnostics must never abort a build. In particular, piping a version
 # command through head while pipefail is active can turn an innocent SIGPIPE
@@ -178,7 +200,12 @@ if [ "$rc" -ne 0 ]; then exit "$rc"; fi
 
 log "[ROW] full headless Writer build"
 CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make -rj2 2>&1 | tee -a row-build.log
-exit ${PIPESTATUS[0]}
+build_rc=${PIPESTATUS[0]}
+if command -v ccache >/dev/null 2>&1 && [ "${ROW_CCACHE_ACTIVE:-0}" = "1" ]; then
+  log "[ROW] ccache statistics after build"
+  ccache -s 2>&1 | tee -a row-build.log || true
+fi
+exit "$build_rc"
 ROW_CONTAINER_SCRIPT
 chmod +x "$BUILD/row-container-build.sh"
 
@@ -191,6 +218,17 @@ if [ -n "$HOST_PYTHON" ] && [ -x "$HOST_PYTHON/bin/python3" ]; then
   PYMOUNT=(-v "$HOST_PYTHON:/opt/row-python:ro")
   PYENV=(-e ROW_PYTHON=/opt/row-python/bin/python3)
 fi
+CCACHEMOUNT=()
+CCACHEENV=()
+if [ -n "$ROW_CCACHE_DIR" ]; then
+  CCACHEMOUNT=(-v "$ROW_CCACHE_DIR:/row-ccache:rw")
+  CCACHEENV=(
+    -e ROW_CCACHE_ACTIVE=1
+    -e CCACHE_DIR=/row-ccache
+    -e CCACHE_BASEDIR=/src
+    -e CCACHE_COMPILERCHECK=content
+  )
+fi
 
 set +e
 docker run --rm \
@@ -198,14 +236,16 @@ docker run --rm \
   -v "$BUILD:/build:rw" \
   -v "$TARBALLS:/ext_sources:rw" \
   "${PYMOUNT[@]}" \
+  "${CCACHEMOUNT[@]}" \
   -e ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE \
   "${PYENV[@]}" \
+  "${CCACHEENV[@]}" \
   "$IMAGE" /bin/bash /build/row-container-build.sh
 rc=$?
 set -e
 
 python3 "$PORT/classify.py" "$BUILD/row-build.log" > "$BUILD/row-build-summary.json" || true
-find "$BUILD" \( -name 'soffice.wasm' -o -name 'soffice.js' -o -name 'soffice.data' -o -name 'soffice.data.js.metadata' \) -print | sort > "$BUILD/runtime-files.txt" || true
+find "$BUILD" \( -name 'soffice.wasm' -o -name 'soffice.js' -o -name 'soffice.data' -o -name 'soffice.data.js.metadata' -o -name 'soffice.worker.js' \) -print | sort > "$BUILD/runtime-files.txt" || true
 WASM=$(find "$BUILD" -name soffice.wasm -print -quit || true)
 if [ -n "$WASM" ]; then
   python3 "$PORT/inspect_wasm.py" "$WASM" > "$BUILD/soffice-inspection.json" || true
