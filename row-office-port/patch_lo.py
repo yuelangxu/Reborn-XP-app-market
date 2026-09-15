@@ -128,8 +128,32 @@ stub = (
     "#else\n" + original + "\n#endif\n"
 )
 s = s[:a] + stub + s[b:]
-old = """    case ModificationTarget::File:\n        if (!writeThread_.is()) {\n            writeThread_ = new WriteThread(\n                &writeThread_, *this, modificationFileUrl_, data_);\n            writeThread_->launch();\n        }\n        writeThread_->trigger();\n        break;\n"""
-new = """    case ModificationTarget::File:\n#if defined __EMSCRIPTEN__ && defined ROW_EMSCRIPTEN_SINGLE_THREAD\n        try {\n            writeModFile(*this, modificationFileUrl_, data_);\n        } catch (css::uno::RuntimeException &) {\n            TOOLS_WARN_EXCEPTION(\"configmgr\", \"error writing modifications\");\n        }\n#else\n        if (!writeThread_.is()) {\n            writeThread_ = new WriteThread(\n                &writeThread_, *this, modificationFileUrl_, data_);\n            writeThread_->launch();\n        }\n        writeThread_->trigger();\n#endif\n        break;\n"""
+old = """    case ModificationTarget::File:
+        if (!writeThread_.is()) {
+            writeThread_ = new WriteThread(
+                &writeThread_, *this, modificationFileUrl_, data_);
+            writeThread_->launch();
+        }
+        writeThread_->trigger();
+        break;
+"""
+new = """    case ModificationTarget::File:
+#if defined __EMSCRIPTEN__ && defined ROW_EMSCRIPTEN_SINGLE_THREAD
+        try {
+            writeModFile(*this, modificationFileUrl_, data_);
+        } catch (css::uno::RuntimeException &) {
+            TOOLS_WARN_EXCEPTION("configmgr", "error writing modifications");
+        }
+#else
+        if (!writeThread_.is()) {
+            writeThread_ = new WriteThread(
+                &writeThread_, *this, modificationFileUrl_, data_);
+            writeThread_->launch();
+        }
+        writeThread_->trigger();
+#endif
+        break;
+"""
 s = replace_once(s, old, new, "configmgr write path")
 write(rel, s)
 
@@ -158,6 +182,30 @@ stub = (
     "#else\n" + original + "\n#endif\n"
 )
 s = s[:a] + stub + s[b:]
+write(rel, s)
+
+# 5. Backport the upstream headless SalInstance DoExecute signature fix.
+# The pinned core has the new SalInstance::DoExecute() pure virtual, but its
+# headless SvpSalInstance declaration/definition still take an obsolete exit-code
+# reference. Current upstream fixes exactly these two signatures.
+rel = "vcl/inc/headless/svpinst.hxx"
+s = read(rel)
+s = replace_once(
+    s,
+    "    bool DoExecute(int &nExitCode) override;\n",
+    "    bool DoExecute() override;\n",
+    "svpinst declaration",
+)
+write(rel, s)
+
+rel = "vcl/headless/svpinst.cxx"
+s = read(rel)
+s = replace_once(
+    s,
+    "bool SvpSalInstance::DoExecute(int &)\n",
+    "bool SvpSalInstance::DoExecute()\n",
+    "svpinst definition",
+)
 write(rel, s)
 
 report = {
