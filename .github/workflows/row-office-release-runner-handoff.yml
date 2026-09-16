@@ -18,4 +18,4 @@ jobs:
   handoff:
     runs-on: ubuntu-latest
     steps:
-      - run: echo 'Release gate takes priority; Run 28 already proved the unchanged core.'
+      - run: echo 'Deterministic packaging gate takes priority; this change does not rebuild the unchanged LibreOffice core.'
