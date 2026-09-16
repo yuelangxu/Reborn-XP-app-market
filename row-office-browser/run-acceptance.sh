@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <prepared-runtime-tree>" >&2
   exit 64
@@ -10,9 +12,10 @@ ROOT=$(cd "$1" && pwd)
 RESULT="$ROOT/row-acceptance-result.json"
 HTTP_LOG="$ROOT/row-acceptance-http.log"
 CHROME_LOG="$ROOT/row-acceptance-chrome.log"
+TRUSTED_LOG="$ROOT/row-trusted-input.log"
 PORT=${ROW_ACCEPTANCE_PORT:-18765}
 TIMEOUT_SECONDS=${ROW_ACCEPTANCE_TIMEOUT_SECONDS:-180}
-rm -f "$RESULT" "$HTTP_LOG" "$CHROME_LOG"
+rm -f "$RESULT" "$HTTP_LOG" "$CHROME_LOG" "$TRUSTED_LOG"
 
 chrome=""
 for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
@@ -122,4 +125,20 @@ if data.get('status') != 'pass':
     raise SystemExit(72)
 PY
 
-echo "Reborn Office browser acceptance passed"
+# Synthetic DOM dispatches are not evidence that a physical keyboard works.
+# Require ChromeDriver and a second browser session that produces trusted events.
+if ! command -v chromedriver >/dev/null 2>&1; then
+  echo "ChromeDriver is required for trusted keyboard acceptance" >&2
+  exit 73
+fi
+if [ ! -s "$ROOT/trusted-input.html" ]; then
+  echo "trusted-input.html is missing from prepared runtime" >&2
+  exit 74
+fi
+CHROMEDRIVER=$(command -v chromedriver) \
+  python3 "$SCRIPT_DIR/trusted-input-driver.py" \
+  "http://127.0.0.1:${PORT}/trusted-input.html" \
+  | tee "$TRUSTED_LOG"
+
+grep -q '"status": "pass"\|"status":"pass"' "$TRUSTED_LOG"
+echo "Reborn Office browser acceptance passed (including trusted physical-keyboard path)"
