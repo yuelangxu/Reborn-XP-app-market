@@ -1,8 +1,19 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>Reborn Office Runtime Acceptance</title>
+<style>
+  #view-fixture {
+    width: 800px;
+    height: 600px;
+    position: fixed;
+    left: -2000px;
+    top: 0;
+    overflow: hidden;
+  }
+</style>
 <pre id="result" data-status="running">starting</pre>
 <script src="./row-office-client.js"></script>
+<script src="./row-office-view.js"></script>
 <script>
 'use strict';
 
@@ -11,6 +22,7 @@
   const log = [];
   const marker = '你好 Reborn Office WASM ✓';
   let client;
+  let view;
 
   function record(name, value) {
     const entry = {name, value};
@@ -20,6 +32,20 @@
 
   function assert(condition, message) {
     if (!condition) throw new Error(message);
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitFor(predicate, message, timeout = 12000) {
+    const deadline = performance.now() + timeout;
+    while (performance.now() < deadline) {
+      const value = await predicate();
+      if (value) return value;
+      await sleep(50);
+    }
+    throw new Error(message);
   }
 
   async function report(result) {
@@ -34,6 +60,8 @@
 
   try {
     assert(typeof RowOfficeClient === 'function', 'RowOfficeClient is missing');
+    assert(typeof RowOfficeCanvasView === 'function', 'RowOfficeCanvasView is missing');
+
     client = new RowOfficeClient('./row-office-worker-loader.js');
     const ready = await client.ready;
     record('ready', ready);
@@ -52,9 +80,9 @@
 
     await client.newWriter();
     await client.postTextInput(marker + ' IME');
-    const text = await client.readText();
-    record('text-input', text);
-    assert(text.text.includes(marker + ' IME'), 'LOK text input did not reach Writer model');
+    const directText = await client.readText();
+    record('text-input', directText);
+    assert(directText.text.includes(marker + ' IME'), 'LOK text input did not reach Writer model');
 
     const info = await client.lokInfo();
     record('lok-info', info);
@@ -78,6 +106,74 @@
     record('tile', {bytes: pixels.byteLength, nonZeroPixels: nonZero, alphaPixels: alpha});
     assert(pixels.byteLength === 128 * 128 * 4, 'LOK tile byte size mismatch');
     assert(nonZero > 128, 'LOK tile is effectively empty');
+    assert(alpha < 128 * 128, 'LOK page-margin transparency unexpectedly disappeared');
+
+    // Exercise the real view/input contract. Steal DOM focus without sending an
+    // outside pointerdown, matching the Reborn XP host focus hand-off that used
+    // to make ordinary human typing disappear.
+    await client.newWriter();
+    const fixture = document.createElement('div');
+    fixture.id = 'view-fixture';
+    document.body.appendChild(fixture);
+    view = new RowOfficeCanvasView(client, fixture, {tileCss: 256});
+    await view.mount();
+
+    const canvas = await waitFor(
+      () => fixture.querySelector('canvas[data-row-tile]'),
+      'Writer view never produced a tile');
+    await waitFor(
+      () => canvas.width > 0 && canvas.height > 0,
+      'Writer tile canvas never received pixels');
+
+    assert(view.pageLayer.children.length > 0, 'Writer page backdrop layer is empty');
+    const attrs = canvas.getContext('2d').getContextAttributes?.();
+    if (attrs) assert(attrs.alpha === true, 'Writer tile canvas flattened LOK alpha');
+
+    const firstPixel = canvas.getContext('2d').getImageData(0, 0, 1, 1).data;
+    record('view-render-contract', {
+      pageBackdrops: view.pageLayer.children.length,
+      firstPixelAlpha: firstPixel[3],
+      surfaceBackground: getComputedStyle(fixture).backgroundColor
+    });
+    assert(firstPixel[3] === 0, 'Transparent LOK page margin was flattened into an opaque pixel');
+
+    view.focus();
+    const focusSink = document.createElement('button');
+    focusSink.textContent = 'focus-sink';
+    document.body.appendChild(focusSink);
+    focusSink.focus();
+    assert(document.activeElement === focusSink, 'Acceptance could not steal DOM focus');
+
+    focusSink.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'K',
+      code: 'KeyK',
+      bubbles: true,
+      cancelable: true
+    }));
+    const fallbackText = await waitFor(async () => {
+      const value = await client.readText();
+      return value.text.includes('K') ? value.text : '';
+    }, 'Document-level keyboard fallback did not reach Writer');
+    record('human-keyboard-fallback', {text: fallbackText});
+
+    view.focus();
+    const ime = view.ime;
+    ime.dispatchEvent(new CompositionEvent('compositionstart', {
+      data: '',
+      bubbles: true
+    }));
+    ime.dispatchEvent(new CompositionEvent('compositionend', {
+      data: '你',
+      bubbles: true
+    }));
+    const imeText = await waitFor(async () => {
+      const value = await client.readText();
+      return value.text.includes('你') ? value.text : '';
+    }, 'DOM composition event did not reach Writer');
+    record('dom-ime', {text: imeText});
+
+    view.destroy();
+    view = null;
 
     const finalResult = {status: 'pass', marker, log};
     out.dataset.status = 'pass';
@@ -98,6 +194,7 @@
     console.error('ROW_ACCEPTANCE_FAIL', failure);
     await report(failure);
   } finally {
+    if (view) view.destroy();
     if (client) client.terminate();
   }
 })();
