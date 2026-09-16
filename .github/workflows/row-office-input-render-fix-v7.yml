@@ -1,0 +1,125 @@
+name: Reborn Office input render fix v7
+
+on:
+  push:
+    branches:
+      - row-office-input-render-fix
+    paths:
+      - '.github/workflows/row-office-input-render-fix-v7.yml'
+      - 'row-office-browser/**'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate-and-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download proven LibreOffice runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: row-office-core-port-evidence
+          path: evidence
+          github-token: ${{ github.token }}
+          run-id: 35040735653
+          repository: yuelangxu/Reborn-XP-app-market
+
+      - name: Assemble v7 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 row-office-browser/apply-input-render-fix-v2.py
+          python3 row-office-browser/apply-input-render-fix-v3.py
+          python3 row-office-browser/apply-input-render-fix-v4.py
+          python3 row-office-browser/apply-input-render-fix-v5.py
+          python3 row-office-browser/apply-input-render-fix-v6.py
+          python3 row-office-browser/apply-input-render-fix-v6b.py
+          python3 row-office-browser/apply-input-render-fix-v7.py
+          wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
+          test -n "$wasm"
+          old_root=$(dirname "$(dirname "$wasm")")
+          rm -rf current-runtime release-a release-b
+          cp -a "$old_root" current-runtime
+          for file in acceptance.html trusted-input.html row-office-client.js row-office-view.js row-office-worker-loader.js row-office-thread.js reborn-office.js; do
+            cp "row-office-browser/$file" "current-runtime/$file"
+          done
+          node --check current-runtime/row-office-view.js
+          node --check current-runtime/row-office-client.js
+          node --check current-runtime/row-office-thread.js
+          grep -q 'const TILE_CSS = 256' current-runtime/row-office-view.js
+          grep -q 'this.renderScale = 1' current-runtime/row-office-view.js
+          grep -q 'workerPhase' current-runtime/row-office-view.js
+          grep -q "emit('rpc-debug'" current-runtime/row-office-thread.js
+          python3 -m py_compile row-office-browser/trusted-input-driver.py
+          chromedriver --version
+
+      - name: Trusted keyboard and runtime acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROW_ACCEPTANCE_TIMEOUT_SECONDS=180 bash row-office-browser/run-acceptance.sh current-runtime
+          cat current-runtime/row-acceptance-result.json
+          cat current-runtime/row-trusted-input.log
+          python3 - <<'PY'
+          import json
+          p=json.load(open('current-runtime/row-acceptance-result.json',encoding='utf-8'))
+          assert p['status']=='pass', p
+          trusted=open('current-runtime/row-trusted-input.log',encoding='utf-8').read()
+          assert '"status": "pass"' in trusted or '"status":"pass"' in trusted, trusted
+          view=open('current-runtime/row-office-view.js',encoding='utf-8').read()
+          thread=open('current-runtime/row-office-thread.js',encoding='utf-8').read()
+          assert 'const TILE_CSS = 256' in view
+          assert 'this.renderScale = 1' in view
+          assert 'workerPhase' in view and "emit('rpc-debug'" in thread
+          print('ROW v7 acceptance passed')
+          PY
+          rm -f current-runtime/trusted-input.html
+
+      - name: Build deterministic package twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-a release-b
+          for out in release-a release-b; do
+            python3 row-office-browser/build-reborn-package-v2.py current-runtime "$out" --source-sha "${GITHUB_SHA}" --accepted
+          done
+          sha_a=$(sha256sum release-a/RebornOfficeWasm-browser-native.zip | awk '{print $1}')
+          sha_b=$(sha256sum release-b/RebornOfficeWasm-browser-native.zip | awk '{print $1}')
+          test "$sha_a" = "$sha_b"
+          cmp -s release-a/RebornOfficeWasm-browser-native.zip release-b/RebornOfficeWasm-browser-native.zip
+          sha256sum release-a/RebornOfficeWasm-browser-native.zip > release-a/RebornOfficeWasm-browser-native.zip.sha256
+          echo "FINAL_SHA256=$sha_a" >> "$GITHUB_ENV"
+
+      - name: Verify v7 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          p='release-a/RebornOfficeWasm-browser-native.zip'
+          with zipfile.ZipFile(p) as z:
+            assert z.testzip() is None
+            assert z.getinfo('RebornOfficeWasm/runtime/soffice.wasm').file_size > 100_000_000
+            view=z.read('RebornOfficeWasm/row-office-view.js').decode()
+            thread=z.read('RebornOfficeWasm/row-office-thread.js').decode()
+            assert 'const TILE_CSS = 256' in view
+            assert 'workerPhase' in view
+            assert "emit('rpc-debug'" in thread
+          print('v7 package verified')
+          PY
+
+      - name: Upload v7 candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: RebornOfficeWasm-input-render-fix-v7
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            release-a/RebornOfficeWasm-browser-native.zip
+            release-a/RebornOfficeWasm-browser-native.zip.sha256
+            current-runtime/row-acceptance-result.json
+            current-runtime/row-trusted-input.log
