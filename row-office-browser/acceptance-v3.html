@@ -39,7 +39,7 @@
 
     await client.newWriter();
     await client.replaceText('ABCD');
-    await client.setLokTextSelection(2, 1700, 1700);
+    await client.setLokTextSelection(2, 1450, 1450);
     await client.postTextInput('X');
     const caretPlacement = (await client.readText()).text;
     record('lok-sync-caret',{text:caretPlacement});
