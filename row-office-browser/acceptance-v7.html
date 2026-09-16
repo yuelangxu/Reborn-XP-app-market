@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reborn Office Runtime Acceptance v7</title>
+<style>#view-fixture{width:800px;height:600px;position:fixed;left:-2000px;top:0;overflow:hidden}</style>
+<pre id="result" data-status="running">starting</pre>
+<script src="./row-office-client.js"></script>
+<script src="./row-office-view.js"></script>
+<script>
+'use strict';
+(async()=>{
+  const out=document.getElementById('result'),log=[]; let client,view;
+  const rec=(name,value)=>{log.push({name,value});out.textContent=JSON.stringify({status:'running',log},null,2)};
+  const ok=(c,m)=>{if(!c)throw new Error(m)};
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  async function wait(fn,msg,timeout=12000){const end=performance.now()+timeout;while(performance.now()<end){const v=await fn();if(v)return v;await sleep(40)}throw new Error(msg)}
+  async function report(x){try{await fetch('/__row_result__',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)})}catch(_){}}
+  try{
+    client=new RowOfficeClient('./row-office-worker-loader.js');
+    const ready=await client.ready; rec('ready',ready); ok(ready.lokBridge&&ready.sharedMemory===false,'runtime contract failed');
+    const marker='你好 Reborn Office WASM ✓';
+    const odt=await client.roundTrip('odt',marker+' ODT'); rec('odt-roundtrip',{pass:odt.pass,bytes:odt.byteLength}); ok(odt.pass,'ODT failed');
+    const docx=await client.roundTrip('docx',marker+' DOCX'); rec('docx-roundtrip',{pass:docx.pass,bytes:docx.byteLength}); ok(docx.pass,'DOCX failed');
+
+    await client.newWriter();
+    const workerStress='abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    for(const ch of workerStress) await client.postTextInput(ch);
+    ok((await client.readText()).text===workerStress,'worker committed-text path lost sustained input');
+    rec('sustained-worker-input',{length:workerStress.length});
+
+    await client.newWriter();
+    const fixture=document.createElement('div');fixture.id='view-fixture';document.body.appendChild(fixture);
+    view=new RowOfficeCanvasView(client,fixture,{tileCss:256}); await view.mount();
+    ok(view.pageLayer.firstElementChild,'blank Writer page backdrop missing');
+    ok(!fixture.querySelector('canvas[data-row-tile]'),'blank Writer rendered a tile before first commit');
+    ok(view.inputFrame&&view.inputWindow&&view.ime,'isolated input frame missing');
+    rec('isolated-input-frame',{frameTag:view.inputFrame.tagName,innerTag:view.ime.tagName});
+
+    const page=view.pageLayer.firstElementChild.getBoundingClientRect();
+    const target=document.elementFromPoint(page.left+80,page.top+80)||view.documentLayer;
+    target.dispatchEvent(new PointerEvent('pointerdown',{pointerId:17,pointerType:'mouse',button:0,buttons:1,clientX:page.left+80,clientY:page.top+80,bubbles:true,cancelable:true}));
+    target.dispatchEvent(new PointerEvent('pointerup',{pointerId:17,pointerType:'mouse',button:0,buttons:0,clientX:page.left+80,clientY:page.top+80,bubbles:true,cancelable:true}));
+    await wait(()=>document.activeElement===view.inputFrame&&view.inputFrame.contentDocument.activeElement===view.ime,'input frame never focused',3000);
+
+    function nativeCommit(text){
+      const before=new InputEvent('beforeinput',{inputType:'insertText',data:text,bubbles:true,cancelable:true});
+      view.ime.dispatchEvent(before);
+      ok(!before.defaultPrevented,'native insertText beforeinput was cancelled');
+      view.ime.value+=text;
+      view.ime.dispatchEvent(new InputEvent('input',{inputType:'insertText',data:text,bubbles:true}));
+    }
+
+    // v7 invariant: the very first real edit must finish before any LOK tile is
+    // allowed to enter the single-worker RPC lane.
+    const t0=performance.now();
+    nativeCommit('A');
+    await wait(async()=>{const t=(await client.readText()).text;return t==='A'?t:''},'first Writer commit was blocked before initial tile paint',5000);
+    const firstCommitMs=Math.round(performance.now()-t0);
+    rec('first-input-before-tile',{text:'A',milliseconds:firstCommitMs});
+    await wait(()=>fixture.querySelector('canvas[data-row-tile]'),'Writer tile missing after first text commit',12000);
+    rec('first-tile-after-input',{ok:true});
+
+    const nativeStress='native-input-abcdefghijklmnopqrstuvwxyz-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    for(const ch of nativeStress) nativeCommit(ch);
+    const expected='A'+nativeStress;
+    const nativeText=await wait(async()=>{const t=(await client.readText()).text;return t===expected?t:''},'native textarea lifecycle stalled',15000);
+    rec('native-textarea-sustained',{length:nativeText.length});
+
+    const sink=document.createElement('button');sink.textContent='focus-sink';document.body.appendChild(sink);sink.focus();
+    await wait(()=>document.activeElement===view.inputFrame&&view.inputFrame.contentDocument.activeElement===view.ime,'focus watchdog failed',3000);
+    nativeCommit('Z');
+    await wait(async()=>{const t=(await client.readText()).text;return t.endsWith('Z')?t:''},'input failed after focus recovery');
+    rec('focus-watchdog',{ok:true});
+
+    function compositionCommit(text){
+      view.ime.dispatchEvent(new CompositionEvent('compositionstart',{data:'',bubbles:true}));
+      view.ime.value=text;
+      view.ime.dispatchEvent(new InputEvent('input',{inputType:'insertCompositionText',data:text,bubbles:true}));
+      view.ime.dispatchEvent(new CompositionEvent('compositionend',{data:text,bubbles:true}));
+      view.ime.dispatchEvent(new InputEvent('input',{inputType:'insertText',data:text,bubbles:true}));
+    }
+    for(const c of ['你','好','连','续','输','入']){compositionCommit(c);await sleep(20)}
+    const imeText=await wait(async()=>{const t=(await client.readText()).text;return t.endsWith('你好连续输入')?t:''},'repeated native composition stalled',12000);
+    rec('repeated-native-ime',{tail:imeText.slice(-12)});
+
+    let selectionCalls=0;const orig=client.setLokTextSelection.bind(client);client.setLokTextSelection=(...a)=>{selectionCalls++;return orig(...a)};
+    const doc=view.documentLayer.getBoundingClientRect(),outsideX=page.left+40,outsideY=Math.max(doc.top+1,page.top-8);
+    const outside=document.elementFromPoint(outsideX,outsideY)||view.documentLayer;
+    outside.dispatchEvent(new PointerEvent('pointerdown',{pointerId:18,pointerType:'mouse',button:0,buttons:1,clientX:outsideX,clientY:outsideY,bubbles:true,cancelable:true}));
+    outside.dispatchEvent(new PointerEvent('pointerup',{pointerId:18,pointerType:'mouse',button:0,buttons:0,clientX:outsideX,clientY:outsideY,bubbles:true,cancelable:true}));
+    await sleep(120);ok(selectionCalls===0,'outside-page click reached selection backend');rec('outside-page-guard',{backendSelectionCalls:selectionCalls});
+
+    view.destroy();view=null;const result={status:'pass',marker,log};out.dataset.status='pass';out.textContent=JSON.stringify(result,null,2);document.title='ROW_ACCEPTANCE_PASS';await report(result);
+  }catch(error){const result={status:'fail',message:error?.message||String(error),stack:error?.stack||'',log};out.dataset.status='fail';out.textContent=JSON.stringify(result,null,2);document.title='ROW_ACCEPTANCE_FAIL';await report(result)}finally{if(view)view.destroy();if(client)client.terminate()}
+})();
+</script>
