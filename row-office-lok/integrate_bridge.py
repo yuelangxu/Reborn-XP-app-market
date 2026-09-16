@@ -19,6 +19,7 @@ TARGET = ROOT / "static/source/unoembindhelpers/RowLokBridge.cxx"
 MK = ROOT / "static/StaticLibrary_unoembind.mk"
 UNO_INIT = ROOT / "desktop/source/app/initjsunoscripting.cxx"
 YIELD_PATCH = HARNESS.parent / "row-office-port" / "patch_single_thread_yield.py"
+YIELD_TARGET = ROOT / "vcl/headless/svpinst.cxx"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -90,14 +91,19 @@ EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
         encoding="utf-8",
     )
 
-# A DedicatedWorker with exactly one runtime thread must never enter headless
-# VCL's condition-variable sleep path: there is no second thread that can wake
-# it, and blocking the worker also blocks browser message/timer delivery.
-subprocess.run([sys.executable, str(YIELD_PATCH), str(ROOT)], check=True)
+# The first smoke fixture intentionally models only the files touched by the
+# bridge/UNO transforms.  Apply the VCL yield patch only when a complete source
+# tree is present; the later exact-pinned-source smoke and every real build have
+# this file and therefore still enforce the PIN + anchor checks.
+if YIELD_TARGET.is_file():
+    subprocess.run([sys.executable, str(YIELD_PATCH), str(ROOT)], check=True)
+    yield_status = "applied"
+else:
+    yield_status = "skipped for minimal transform fixture"
 
 print(f"ROW LOK bridge copied to {TARGET.relative_to(ROOT)}")
 print("ROW LOK bridge added to whole-archived unoembind static library")
 print("ROW LOK bridge declared its Boost header dependency")
 if UNO_INIT.is_file():
     print("ROW UNO scripts use synchronous importScripts() in the DedicatedWorker")
-print("ROW single-thread headless VCL yield is non-blocking")
+print(f"ROW single-thread headless VCL yield patch: {yield_status}")
