@@ -1,0 +1,146 @@
+name: Reborn Office input render fix v9
+
+on:
+  push:
+    branches: [row-office-input-render-fix]
+    paths:
+      - '.github/workflows/row-office-input-render-fix-v9.yml'
+      - 'row-office-browser/**'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  validate-and-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download proven LibreOffice runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: row-office-core-port-evidence
+          path: evidence
+          github-token: ${{ github.token }}
+          run-id: 35040735653
+          repository: yuelangxu/Reborn-XP-app-market
+
+      - name: Assemble v9 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 row-office-browser/apply-input-render-fix-v2.py
+          python3 row-office-browser/apply-input-render-fix-v3.py
+          python3 row-office-browser/apply-input-render-fix-v4.py
+          python3 row-office-browser/apply-input-render-fix-v5.py
+          python3 row-office-browser/apply-input-render-fix-v6.py
+          python3 row-office-browser/apply-input-render-fix-v6b.py
+          python3 row-office-browser/apply-input-render-fix-v7.py
+          python3 row-office-browser/apply-input-render-fix-v8.py
+          python3 row-office-browser/apply-input-render-fix-v8c.py
+          python3 row-office-browser/apply-input-render-fix-v9.py
+          cp row-office-browser/acceptance-v8-trace.html row-office-browser/acceptance.html
+          wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
+          test -n "$wasm"
+          old_root=$(dirname "$(dirname "$wasm")")
+          rm -rf current-runtime release-a release-b
+          cp -a "$old_root" current-runtime
+          for file in acceptance.html trusted-input.html row-office-client.js row-office-view.js row-office-worker-loader.js row-office-thread.js reborn-office.js; do
+            cp "row-office-browser/$file" "current-runtime/$file"
+          done
+          node --check current-runtime/row-office-view.js
+          node --check current-runtime/row-office-client.js
+          node --check current-runtime/row-office-thread.js
+          python3 -m py_compile row-office-browser/trusted-input-driver-v8.py
+          grep -q "version: 'v8-host-safe'" current-runtime/row-office-view.js
+          grep -q 'paintInvalidationsSuppressed' current-runtime/row-office-view.js
+          grep -q 'tilesPainted' current-runtime/row-office-view.js
+          ! grep -q 'inputQueue' current-runtime/row-office-view.js
+          ! grep -q 'focusWatchdog' current-runtime/row-office-view.js
+          ! grep -q 'setPointerCapture' current-runtime/row-office-view.js
+          grep -q '_requestNow' current-runtime/row-office-client.js
+          chromedriver --version
+
+      - name: Freeze-trace host-safe and trusted acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv row-office-browser/trusted-input-driver.py row-office-browser/trusted-input-driver.py.old
+          cp row-office-browser/trusted-input-driver-v8.py row-office-browser/trusted-input-driver.py
+          ROW_ACCEPTANCE_TIMEOUT_SECONDS=180 bash row-office-browser/run-acceptance.sh current-runtime
+          cat current-runtime/row-acceptance-result.json
+          cat current-runtime/row-acceptance-trace.log
+          cat current-runtime/row-trusted-input.log
+          python3 - <<'PY'
+          import json
+          p=json.load(open('current-runtime/row-acceptance-result.json',encoding='utf-8'))
+          assert p['status']=='pass', p
+          names={x['name'] for x in p['log']}
+          required={
+            'first-input-before-tile','first-tile-after-input',
+            'native-textarea-sustained','host-focus-respected',
+            'click-refocus-input','repeated-native-ime','outside-page-guard'
+          }
+          missing=required-names
+          assert not missing, sorted(missing)
+          trusted=open('current-runtime/row-trusted-input.log',encoding='utf-8').read()
+          assert '"status": "pass"' in trusted or '"status":"pass"' in trusted, trusted
+          assert 'Writer stole focus back' not in trusted
+          trace=open('current-runtime/row-acceptance-trace.log',encoding='utf-8').read()
+          assert '"stage":"reclick-z-ok"' in trace, trace[-5000:]
+          assert '"stage":"final-pass"' in trace, trace[-5000:]
+          print('ROW v9 freeze-trace acceptance passed')
+          PY
+          rm -f current-runtime/trusted-input.html
+
+      - name: Build deterministic package twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-a release-b
+          for out in release-a release-b; do
+            python3 row-office-browser/build-reborn-package-v2.py current-runtime "$out" --source-sha "${GITHUB_SHA}" --accepted
+          done
+          sha_a=$(sha256sum release-a/RebornOfficeWasm-browser-native.zip | awk '{print $1}')
+          sha_b=$(sha256sum release-b/RebornOfficeWasm-browser-native.zip | awk '{print $1}')
+          test "$sha_a" = "$sha_b"
+          cmp -s release-a/RebornOfficeWasm-browser-native.zip release-b/RebornOfficeWasm-browser-native.zip
+          sha256sum release-a/RebornOfficeWasm-browser-native.zip > release-a/RebornOfficeWasm-browser-native.zip.sha256
+          echo "FINAL_SHA256=$sha_a" >> "$GITHUB_ENV"
+
+      - name: Verify v9 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile
+          p='release-a/RebornOfficeWasm-browser-native.zip'
+          with zipfile.ZipFile(p) as z:
+            assert z.testzip() is None
+            assert z.getinfo('RebornOfficeWasm/runtime/soffice.wasm').file_size > 100_000_000
+            view=z.read('RebornOfficeWasm/row-office-view.js').decode()
+            client=z.read('RebornOfficeWasm/row-office-client.js').decode()
+            assert "version: 'v8-host-safe'" in view
+            assert 'paintInvalidationsSuppressed' in view
+            assert 'tilesPainted' in view
+            assert 'inputQueue' not in view
+            assert 'focusWatchdog' not in view
+            assert 'setPointerCapture' not in view
+            assert '_requestNow' in client
+          print('v9 package verified')
+          PY
+
+      - name: Upload v9 candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: RebornOfficeWasm-input-render-fix-v9
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            release-a/RebornOfficeWasm-browser-native.zip
+            release-a/RebornOfficeWasm-browser-native.zip.sha256
+            current-runtime/row-acceptance-result.json
+            current-runtime/row-acceptance-trace.log
+            current-runtime/row-trusted-input.log
