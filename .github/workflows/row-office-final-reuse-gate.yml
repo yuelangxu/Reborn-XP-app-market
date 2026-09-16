@@ -117,18 +117,23 @@ jobs:
                   if parent != './' and parent in positions and positions[parent] > positions[name]:
                       raise SystemExit(f'parent after child: {parent} > {name}')
               release = json.loads(z.read('RebornOfficeWasm/release.json'))
-              if not release.get('accepted'):
-                  raise SystemExit('release.json is not accepted')
-              if release.get('sourceSha') != '968d2bc1d46f22d2bfbb29258fad3b2f22879fa6':
-                  raise SystemExit(f'unexpected sourceSha: {release.get("sourceSha")}')
+              if not release.get('browserAcceptancePassed'):
+                  raise SystemExit('release.json does not record browser acceptance')
+              if release.get('sourceCommit') != '968d2bc1d46f22d2bfbb29258fad3b2f22879fa6':
+                  raise SystemExit(f'unexpected sourceCommit: {release.get("sourceCommit")}')
+              if release.get('sharedMemoryRequired') is not False:
+                  raise SystemExit('release.json unexpectedly requires shared memory')
+              if release.get('nativeBackendRequired') is not False:
+                  raise SystemExit('release.json unexpectedly requires a native backend')
               info = z.getinfo('RebornOfficeWasm/runtime/soffice.wasm')
               if info.file_size < 100_000_000:
                   raise SystemExit(f'implausibly small soffice.wasm: {info.file_size}')
               print(json.dumps({
                   'members': len(names),
                   'wasmBytes': info.file_size,
-                  'sourceSha': release.get('sourceSha'),
-                  'accepted': release.get('accepted')
+                  'sourceCommit': release.get('sourceCommit'),
+                  'browserAcceptancePassed': release.get('browserAcceptancePassed'),
+                  'sharedMemoryRequired': release.get('sharedMemoryRequired')
               }, indent=2))
           PY
 
