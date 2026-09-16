@@ -1,0 +1,149 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Reborn Office Runtime Acceptance</title>
+<style>
+  #view-fixture { width:800px; height:600px; position:fixed; left:-2000px; top:0; overflow:hidden; }
+</style>
+<pre id="result" data-status="running">starting</pre>
+<script src="./row-office-client.js"></script>
+<script src="./row-office-view.js"></script>
+<script>
+'use strict';
+(async () => {
+  const out = document.getElementById('result');
+  const log = [];
+  const marker = '你好 Reborn Office WASM ✓';
+  let client, view;
+  const record = (name, value) => { log.push({name, value}); out.textContent = JSON.stringify({status:'running',log}, null, 2); };
+  const assert = (c,m) => { if (!c) throw new Error(m); };
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  async function waitFor(fn, message, timeout=12000) {
+    const end = performance.now()+timeout;
+    while (performance.now()<end) { const v = await fn(); if (v) return v; await sleep(40); }
+    throw new Error(message);
+  }
+  async function report(result) { try { await fetch('/__row_result__',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(result)}); } catch (_) {} }
+  try {
+    client = new RowOfficeClient('./row-office-worker-loader.js');
+    const ready = await client.ready;
+    record('ready', ready);
+    assert(ready.sharedMemory === false, 'WASM memory is shared');
+    assert(ready.lokBridge === true, 'ROW LOK bridge missing');
+
+    const odt = await client.roundTrip('odt', marker+' ODT');
+    record('odt-roundtrip',{pass:odt.pass,bytes:odt.byteLength,reopened:odt.reopened});
+    assert(odt.pass && odt.byteLength > 100,'ODT round-trip failed');
+    const docx = await client.roundTrip('docx', marker+' DOCX');
+    record('docx-roundtrip',{pass:docx.pass,bytes:docx.byteLength,reopened:docx.reopened});
+    assert(docx.pass && docx.byteLength > 100,'DOCX round-trip failed');
+
+    await client.newWriter();
+    await client.replaceText('ABCD');
+    await client.setLokTextSelection(2, 1450, 1450);
+    await client.postTextInput('X');
+    const caretPlacement = (await client.readText()).text;
+    record('lok-sync-caret',{text:caretPlacement});
+    assert(caretPlacement !== 'ABCDX' && caretPlacement.includes('X'),'Synchronous caret placement did not alter insertion point');
+
+    // Stress the committed-text backend itself. This used to go through the
+    // stateful VCL ExtTextInput path and could stop accepting text after a few commits.
+    await client.newWriter();
+    const directStress = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    for (const ch of directStress) await client.postTextInput(ch);
+    const directStressText = (await client.readText()).text;
+    record('sustained-worker-input',{length:directStressText.length,text:directStressText});
+    assert(directStressText === directStress,'Committed-text backend lost or reordered sustained input');
+
+    const info = await client.lokInfo();
+    record('lok-info',info);
+    const tile = await client.renderTile({canvasWidth:128,canvasHeight:128,xTwips:0,yTwips:0,widthTwips:Math.min(info.widthTwips,1920),heightTwips:Math.min(info.heightTwips,1920)});
+    const px = new Uint8Array(tile.rgba);
+    let alpha = 0; for (let i=3;i<px.length;i+=4) if (px[i]) alpha++;
+    record('tile',{bytes:px.byteLength,alphaPixels:alpha});
+    assert(px.byteLength===65536 && alpha>128 && alpha<16384,'Tile alpha contract failed');
+
+    await client.newWriter();
+    const fixture = document.createElement('div'); fixture.id='view-fixture'; document.body.appendChild(fixture);
+    view = new RowOfficeCanvasView(client, fixture, {tileCss:256});
+    await view.mount();
+    const canvas = await waitFor(()=>fixture.querySelector('canvas[data-row-tile]'),'no Writer tile');
+    await waitFor(()=>canvas.width>0,'tile never painted');
+    assert(view.pageLayer.children.length>0,'page backdrop missing');
+    assert(view.inputFrame && view.inputWindow && view.ime,'isolated input frame missing');
+    record('isolated-input-frame',{frameTag:view.inputFrame.tagName,innerTag:view.ime.tagName});
+
+    const first = canvas.getContext('2d').getImageData(0,0,1,1).data;
+    record('view-render-contract',{firstPixelAlpha:first[3],pageBackdrops:view.pageLayer.children.length});
+    assert(first[3]===0,'page margin flattened opaque');
+
+    let parentKeyHits=0, parentBeforeHits=0;
+    const blockKey=(e)=>{parentKeyHits++; e.preventDefault(); e.stopImmediatePropagation();};
+    const blockBefore=(e)=>{parentBeforeHits++; e.preventDefault(); e.stopImmediatePropagation();};
+    window.addEventListener('keydown', blockKey, true);
+    window.addEventListener('beforeinput', blockBefore, true);
+
+    const page = view.pageLayer.firstElementChild.getBoundingClientRect();
+    const clickX = page.left + 80, clickY = page.top + 80;
+    const target = document.elementFromPoint(clickX, clickY) || view.documentLayer;
+    target.dispatchEvent(new PointerEvent('pointerdown',{pointerId:7,pointerType:'mouse',button:0,buttons:1,clientX:clickX,clientY:clickY,bubbles:true,cancelable:true}));
+    target.dispatchEvent(new PointerEvent('pointerup',{pointerId:7,pointerType:'mouse',button:0,buttons:0,clientX:clickX,clientY:clickY,bubbles:true,cancelable:true}));
+    await waitFor(()=>view.cursor.style.display==='block','click did not show caret');
+    assert(String(view.cursor.style.animation).includes('row-office-caret-blink'),'caret is not blinking');
+    await waitFor(()=>document.activeElement===view.inputFrame && view.inputFrame.contentDocument.activeElement===view.ime,'isolated editor did not keep focus',3000);
+
+    view.ime.dispatchEvent(new KeyboardEvent('keydown',{key:'K',code:'KeyK',bubbles:true,cancelable:true}));
+    const typed = await waitFor(async()=>{const t=(await client.readText()).text; return t.includes('K')?t:'';},'iframe keydown did not reach Writer');
+    assert(parentKeyHits===0,'parent window observed child-frame keydown');
+    record('iframe-keyboard',{text:typed,parentKeyHits});
+
+    // Reproduce the user's long-running session: dozens of sequential commits.
+    const sustained = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    for (const ch of sustained) {
+      view.ime.dispatchEvent(new KeyboardEvent('keydown',{key:ch,code:'Key'+ch.toUpperCase(),bubbles:true,cancelable:true}));
+    }
+    const sustainedText = await waitFor(async()=>{
+      const t=(await client.readText()).text;
+      return t.includes(sustained) ? t : '';
+    },'iframe stopped accepting sustained keyboard input',15000);
+    assert(parentKeyHits===0,'parent window observed sustained child-frame keydown');
+    record('sustained-iframe-input',{length:sustainedText.length,text:sustainedText,parentKeyHits});
+
+    // Steal focus from the child without clicking outside the Writer. The watchdog
+    // must recover both the iframe and its textarea before more input is sent.
+    const sink = document.createElement('button'); sink.textContent='focus-sink'; document.body.appendChild(sink); sink.focus();
+    assert(document.activeElement===sink,'could not steal focus for watchdog test');
+    await waitFor(()=>document.activeElement===view.inputFrame && view.inputFrame.contentDocument.activeElement===view.ime,'focus watchdog did not recover isolated editor',3000);
+    view.ime.dispatchEvent(new KeyboardEvent('keydown',{key:'Z',code:'KeyZ',bubbles:true,cancelable:true}));
+    const recovered = await waitFor(async()=>{const t=(await client.readText()).text; return t.endsWith('Z')?t:'';},'typing failed after focus watchdog recovery');
+    record('focus-watchdog',{text:recovered.slice(-12)});
+
+    const imeChunks = ['你','好','连','续','输','入'];
+    for (const chunk of imeChunks) {
+      view.ime.dispatchEvent(new CompositionEvent('compositionstart',{data:'',bubbles:true}));
+      view.ime.dispatchEvent(new CompositionEvent('compositionend',{data:chunk,bubbles:true}));
+      await sleep(15);
+    }
+    const imeExpected = imeChunks.join('');
+    const imeText = await waitFor(async()=>{const t=(await client.readText()).text; return t.includes(imeExpected)?t:'';},'repeated iframe IME commits stopped reaching Writer',12000);
+    assert(parentBeforeHits===0,'parent window observed child-frame beforeinput');
+    record('repeated-iframe-ime',{tail:imeText.slice(-20),parentBeforeHits});
+
+    const beforeLeft=view.cursor.style.left, beforeTop=view.cursor.style.top;
+    const docRect=view.documentLayer.getBoundingClientRect();
+    const outsideX = page.left + 50;
+    const outsideY = Math.max(docRect.top + 1, page.top - 8);
+    const outsideTarget = document.elementFromPoint(outsideX,outsideY) || view.documentLayer;
+    outsideTarget.dispatchEvent(new PointerEvent('pointerdown',{pointerId:8,pointerType:'mouse',button:0,buttons:1,clientX:outsideX,clientY:outsideY,bubbles:true,cancelable:true}));
+    outsideTarget.dispatchEvent(new PointerEvent('pointerup',{pointerId:8,pointerType:'mouse',button:0,buttons:0,clientX:outsideX,clientY:outsideY,bubbles:true,cancelable:true}));
+    await sleep(120);
+    assert(view.cursor.style.left===beforeLeft && view.cursor.style.top===beforeTop,'outside-page click moved caret');
+    record('outside-page-guard',{left:beforeLeft,top:beforeTop});
+
+    window.removeEventListener('keydown',blockKey,true); window.removeEventListener('beforeinput',blockBefore,true);
+    view.destroy(); view=null;
+    const result={status:'pass',marker,log}; out.dataset.status='pass'; out.textContent=JSON.stringify(result,null,2); document.title='ROW_ACCEPTANCE_PASS'; await report(result);
+  } catch (error) {
+    const result={status:'fail',message:error?.message||String(error),stack:error?.stack||'',log}; out.dataset.status='fail'; out.textContent=JSON.stringify(result,null,2); document.title='ROW_ACCEPTANCE_FAIL'; await report(result);
+  } finally { if (view) view.destroy(); if (client) client.terminate(); }
+})();
+</script>
