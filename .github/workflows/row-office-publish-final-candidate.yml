@@ -23,13 +23,25 @@ jobs:
           github-token: ${{ github.token }}
           run-id: 35050858888
 
-      - name: Verify final package digest
+      - name: Locate and verify final package digest
         shell: bash
         run: |
           set -euo pipefail
-          cd final
-          sha256sum -c RebornOfficeWasm-browser-native.zip.sha256
-          ls -lh RebornOfficeWasm-browser-native.zip
+          package=$(find final -type f -name 'RebornOfficeWasm-browser-native.zip' -print -quit)
+          sha_file=$(find final -type f -name 'RebornOfficeWasm-browser-native.zip.sha256' -print -quit)
+          acceptance=$(find final -type f -name 'row-acceptance-result.json' -print -quit)
+          test -n "$package"
+          test -n "$sha_file"
+          test -n "$acceptance"
+          expected=$(awk '{print $1}' "$sha_file")
+          actual=$(sha256sum "$package" | awk '{print $1}')
+          test "$actual" = "$expected"
+          echo "FINAL_PACKAGE=$package" >> "$GITHUB_ENV"
+          echo "FINAL_SHA_FILE=$sha_file" >> "$GITHUB_ENV"
+          echo "FINAL_ACCEPTANCE=$acceptance" >> "$GITHUB_ENV"
+          echo "FINAL_SHA256=$actual" >> "$GITHUB_ENV"
+          ls -lh "$package" "$sha_file" "$acceptance"
+          echo "SHA256=$actual"
 
       - name: Create prerelease and upload direct package asset
         env:
@@ -48,9 +60,9 @@ jobs:
               --prerelease
           fi
           gh release upload "$TAG" \
-            final/RebornOfficeWasm-browser-native.zip \
-            final/RebornOfficeWasm-browser-native.zip.sha256 \
-            final/row-acceptance-result.json \
+            "$FINAL_PACKAGE" \
+            "$FINAL_SHA_FILE" \
+            "$FINAL_ACCEPTANCE" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,isPrerelease,assets
