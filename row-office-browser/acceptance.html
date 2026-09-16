@@ -108,6 +108,22 @@
     assert(nonZero > 128, 'LOK tile is effectively empty');
     assert(alpha < 128 * 128, 'LOK page-margin transparency unexpectedly disappeared');
 
+    // Direct LOK mouse probe. This bypasses Reborn's DOM/window manager and tells
+    // us whether the LibreOffice mouse path itself can place a Writer caret.
+    await client.newWriter();
+    let mouseCursorPayload = '';
+    const offMouseProbe = client.on('lok-callback', (message) => {
+      if (Number(message.callbackType) === 1 && String(message.payload || '').trim()
+          && String(message.payload || '').trim() !== 'EMPTY') {
+        mouseCursorPayload = String(message.payload);
+      }
+    });
+    await client.postLokMouse(0, 1800, 1800, 1, 1, 0);
+    await client.postLokMouse(1, 1800, 1800, 1, 1, 0);
+    await waitFor(() => mouseCursorPayload, 'Direct LOK mouse click did not produce a visible cursor callback', 4000);
+    offMouseProbe();
+    record('lok-mouse-caret', {payload: mouseCursorPayload});
+
     // Exercise the real view/input contract. Steal DOM focus without sending an
     // outside pointerdown, matching the Reborn XP host focus hand-off that used
     // to make ordinary human typing disappear.
@@ -136,6 +152,24 @@
       surfaceBackground: getComputedStyle(fixture).backgroundColor
     });
     assert(firstPixel[3] === 0, 'Transparent LOK page margin was flattened into an opaque pixel');
+
+    // DOM mouse probe: actual pointerdown/up must make the view display a caret.
+    view.cursorRect = null;
+    view._renderCursor();
+    const docRect = view.documentLayer.getBoundingClientRect();
+    const page = view.pageLayer.firstElementChild.getBoundingClientRect();
+    const clickX = Math.max(page.left + 80, docRect.left + 40);
+    const clickY = Math.max(page.top + 80, docRect.top + 40);
+    view.documentLayer.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1,
+      clientX: clickX, clientY: clickY, bubbles: true, cancelable: true
+    }));
+    view.documentLayer.dispatchEvent(new PointerEvent('pointerup', {
+      pointerId: 1, pointerType: 'mouse', button: 0, buttons: 0,
+      clientX: clickX, clientY: clickY, bubbles: true, cancelable: true
+    }));
+    await waitFor(() => view.cursorRect, 'DOM pointer click did not produce a Writer caret callback', 4000);
+    record('dom-mouse-caret', {cursorRect: view.cursorRect});
 
     view.focus();
     const focusSink = document.createElement('button');
