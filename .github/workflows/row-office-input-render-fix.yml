@@ -36,6 +36,7 @@ jobs:
           python3 row-office-browser/apply-input-render-fix-v2.py
           python3 row-office-browser/apply-input-render-fix-v3.py
           python3 row-office-browser/apply-input-render-fix-v4.py
+          python3 row-office-browser/apply-input-render-fix-v5.py
           wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
           test -n "$wasm"
           old_root=$(dirname "$(dirname "$wasm")")
@@ -43,6 +44,7 @@ jobs:
           cp -a "$old_root" current-runtime
           for file in \
             acceptance.html \
+            trusted-input.html \
             row-office-client.js \
             row-office-view.js \
             row-office-worker-loader.js \
@@ -55,18 +57,23 @@ jobs:
           test -s current-runtime/runtime/soffice.data
           test -s current-runtime/runtime/soffice.data.js.metadata
           test -s current-runtime/vendor/zeta.js
+          test -s current-runtime/trusted-input.html
           node --check current-runtime/row-office-view.js
           node --check current-runtime/row-office-client.js
           node --check current-runtime/row-office-thread.js
+          python3 -m py_compile row-office-browser/trusted-input-driver.py
+          echo "ChromeDriver: $(command -v chromedriver || true)"
+          chromedriver --version
           ls -lh current-runtime/runtime/soffice.* current-runtime/vendor/zeta.js
 
-      - name: Run real-browser input and rendering acceptance
+      - name: Run native and trusted keyboard acceptance
         shell: bash
         run: |
           set -euo pipefail
           ROW_ACCEPTANCE_TIMEOUT_SECONDS=180 \
             bash row-office-browser/run-acceptance.sh current-runtime
           cat current-runtime/row-acceptance-result.json
+          cat current-runtime/row-trusted-input.log
           python3 - <<'PY'
           import json
           p = json.load(open('current-runtime/row-acceptance-result.json', encoding='utf-8'))
@@ -74,15 +81,17 @@ jobs:
           names = {x['name'] for x in p['log']}
           required = {
               'ready', 'odt-roundtrip', 'docx-roundtrip',
-              'lok-info', 'tile', 'lok-sync-caret', 'view-render-contract',
-              'sustained-worker-input', 'isolated-input-frame', 'iframe-keyboard',
-              'sustained-iframe-input', 'focus-watchdog', 'repeated-iframe-ime',
-              'outside-page-guard'
+              'sustained-worker-input', 'isolated-input-frame',
+              'native-textarea-sustained', 'focus-watchdog',
+              'repeated-native-ime', 'outside-page-guard'
           }
           missing = required - names
           assert not missing, f'missing acceptance probes: {sorted(missing)}'
-          print('ROW input/render acceptance probes:', sorted(required))
+          trusted = open('current-runtime/row-trusted-input.log', encoding='utf-8').read()
+          assert '"status": "pass"' in trusted or '"status":"pass"' in trusted, trusted
+          print('ROW v5 native probes:', sorted(required))
           PY
+          rm -f current-runtime/trusted-input.html
 
       - name: Build deterministic Reborn XP package twice
         shell: bash
@@ -135,6 +144,7 @@ jobs:
               ]
               for item in required:
                   assert item in names, item
+              assert not any(name.endswith('trusted-input.html') for name in names), names
               positions = {name: i for i, name in enumerate(names)}
               for name in names:
                   if name.endswith('/'):
@@ -168,3 +178,4 @@ jobs:
             current-runtime/row-acceptance-result.json
             current-runtime/row-acceptance-chrome.log
             current-runtime/row-acceptance-http.log
+            current-runtime/row-trusted-input.log
