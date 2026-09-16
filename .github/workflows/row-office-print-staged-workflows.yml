@@ -1,0 +1,37 @@
+name: Print staged Reborn Office workflows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-runtime-probe]
+    paths:
+      - '.github/workflows/row-office-print-staged-workflows.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  print:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download staged workflows
+        uses: actions/download-artifact@v4
+        with:
+          name: row-office-staged-workflows
+          path: staged
+          github-token: ${{ github.token }}
+          run-id: 35050164057
+
+      - name: Print exact base64 payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'ROW_BROWSER_SMOKE_BASE64_BEGIN'
+          base64 -w0 staged/row-office-browser-smoke.yml
+          echo
+          echo 'ROW_BROWSER_SMOKE_BASE64_END'
+          echo 'ROW_CORE_PORT_BASE64_BEGIN'
+          base64 -w0 staged/row-office-core-port.yml
+          echo
+          echo 'ROW_CORE_PORT_BASE64_END'
