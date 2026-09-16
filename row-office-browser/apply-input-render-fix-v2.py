@@ -139,6 +139,45 @@ replace_once('row-office-view.js', '''      this.surface.addEventListener('scrol
       window.addEventListener('pointerup', this.onPointerUp, true);
       window.addEventListener('pointercancel', this.onPointerUp, true);
 ''')
+replace_once('row-office-view.js', '''      this.onDocumentKeyDownCapture = (event) => {
+        if (!this.active || this.destroyed || event.target === this.ime) return;
+        if (isEditableTarget(event.target)) return;
+        this._keyDown(event, false);
+      };
+''', '''      this.onDocumentKeyDownCapture = (event) => {
+        if (!this.active || this.destroyed) return;
+        if (event.target !== this.ime && isEditableTarget(event.target)) return;
+        this._keyDown(event, event.target === this.ime);
+      };
+      this.onWindowBeforeInputCapture = (event) => {
+        if (this.active && !this.destroyed && event.target === this.ime) this._beforeInput(event);
+      };
+      this.onWindowInputCapture = (event) => {
+        if (this.active && !this.destroyed && event.target === this.ime) this._inputFallback();
+      };
+      this.onWindowCompositionStartCapture = (event) => {
+        if (this.active && !this.destroyed && event.target === this.ime) this.onCompositionStart(event);
+      };
+      this.onWindowCompositionEndCapture = (event) => {
+        if (this.active && !this.destroyed && event.target === this.ime) this.onCompositionEnd(event);
+      };
+''')
+
+replace_once('row-office-view.js', '''      this.ime.addEventListener('keydown', this.onImeKeyDown);
+      this.ime.addEventListener('beforeinput', this.onImeBeforeInput);
+      this.ime.addEventListener('input', this.onImeInput);
+      this.ime.addEventListener('compositionstart', this.onCompositionStart);
+      this.ime.addEventListener('compositionend', this.onCompositionEnd);
+      this.ime.addEventListener('blur', this.onImeBlur);
+''', '''      // Input is captured at window level so host document handlers cannot
+      // swallow keyboard/IME events before they reach the hidden editor.
+      this.ime.addEventListener('blur', this.onImeBlur);
+      window.addEventListener('beforeinput', this.onWindowBeforeInputCapture, true);
+      window.addEventListener('input', this.onWindowInputCapture, true);
+      window.addEventListener('compositionstart', this.onWindowCompositionStartCapture, true);
+      window.addEventListener('compositionend', this.onWindowCompositionEndCapture, true);
+''')
+
 replace_once('row-office-view.js', "      document.addEventListener('keydown', this.onDocumentKeyDownCapture, true);\n", "      window.addEventListener('keydown', this.onDocumentKeyDownCapture, true);\n")
 
 replace_once('row-office-view.js', '''        ctx.clearRect(0, 0, result.canvasWidth, result.canvasHeight);
@@ -205,6 +244,9 @@ replace_once('row-office-view.js', '''      if (type === LOK_MOUSEEVENT_MOUSEBUT
           // Writer postMouseEvent is async; in single-thread WASM it does not
           // reliably place a caret. RESET is the synchronous Writer
           // SetCursorTwipPosition path.
+          this.cursorRect = {x: point.xTwips, y: point.yTwips, width: 15, height: 300};
+          this.cursorVisible = true;
+          this._renderCursor();
           this.client.setLokTextSelection(
             LOK_SETTEXTSELECTION_RESET, point.xTwips, point.yTwips
           ).then(() => this._scheduleVisible(true))
@@ -223,6 +265,18 @@ replace_once('row-office-view.js', '''      this.surface.removeEventListener('sc
       window.removeEventListener('pointermove', this.onPointerMove, true);
       window.removeEventListener('pointerup', this.onPointerUp, true);
       window.removeEventListener('pointercancel', this.onPointerUp, true);
+''')
+replace_once('row-office-view.js', '''      this.ime.removeEventListener('keydown', this.onImeKeyDown);
+      this.ime.removeEventListener('beforeinput', this.onImeBeforeInput);
+      this.ime.removeEventListener('input', this.onImeInput);
+      this.ime.removeEventListener('compositionstart', this.onCompositionStart);
+      this.ime.removeEventListener('compositionend', this.onCompositionEnd);
+      this.ime.removeEventListener('blur', this.onImeBlur);
+''', '''      this.ime.removeEventListener('blur', this.onImeBlur);
+      window.removeEventListener('beforeinput', this.onWindowBeforeInputCapture, true);
+      window.removeEventListener('input', this.onWindowInputCapture, true);
+      window.removeEventListener('compositionstart', this.onWindowCompositionStartCapture, true);
+      window.removeEventListener('compositionend', this.onWindowCompositionEndCapture, true);
 ''')
 replace_once('row-office-view.js', "      document.removeEventListener('keydown', this.onDocumentKeyDownCapture, true);\n", "      window.removeEventListener('keydown', this.onDocumentKeyDownCapture, true);\n")
 
@@ -245,25 +299,70 @@ replace_once('acceptance.html', '''    // Direct LOK mouse probe. This bypasses 
     offMouseProbe();
     record('lok-mouse-caret', {payload: mouseCursorPayload});
 ''', '''    // Writer postMouseEvent is asynchronous and is known not to place a caret
-    // in this single-thread Emscripten runtime. Gate the synchronous Writer
-    // setTextSelection(RESET) path instead.
+    // in this single-thread Emscripten runtime. Verify that synchronous Writer
+    // setTextSelection(RESET) actually moves the insertion point, not just that
+    // the API call returns.
     await client.newWriter();
-    let syncCursorPayload = '';
-    const offSyncProbe = client.on('lok-callback', (message) => {
-      if (Number(message.callbackType) === 1 && String(message.payload || '').trim()
-          && String(message.payload || '').trim() !== 'EMPTY') {
-        syncCursorPayload = String(message.payload);
-      }
-    });
-    await client.setLokTextSelection(2, 1800, 1800);
-    await waitFor(() => syncCursorPayload, 'Synchronous LOK cursor placement did not produce a visible cursor callback', 4000);
-    offSyncProbe();
-    await client.postTextInput('C');
-    const syncCaretText = await waitFor(async () => {
+    await client.postTextInput('ABCD');
+    assert((await client.readText()).text === 'ABCD', 'Caret-position fixture text mismatch');
+    await client.setLokTextSelection(2, 1450, 1450);
+    await client.postTextInput('X');
+    const syncCaretText = (await client.readText()).text;
+    assert(syncCaretText.includes('X'), 'Text input after synchronous LOK caret placement did not reach Writer');
+    assert(syncCaretText !== 'ABCDX', 'Synchronous LOK cursor placement did not move the insertion point');
+    record('lok-sync-caret', {text: syncCaretText});
+''')
+
+replace_once('acceptance.html', '''    // DOM mouse probe: actual pointerdown/up must make the view display a caret.
+    view.cursorRect = null;
+    view._renderCursor();
+    const docRect = view.documentLayer.getBoundingClientRect();
+    const page = view.pageLayer.firstElementChild.getBoundingClientRect();
+    const clickX = Math.max(page.left + 80, docRect.left + 40);
+    const clickY = Math.max(page.top + 80, docRect.top + 40);
+    view.documentLayer.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1,
+      clientX: clickX, clientY: clickY, bubbles: true, cancelable: true
+    }));
+    view.documentLayer.dispatchEvent(new PointerEvent('pointerup', {
+      pointerId: 1, pointerType: 'mouse', button: 0, buttons: 0,
+      clientX: clickX, clientY: clickY, bubbles: true, cancelable: true
+    }));
+    await waitFor(() => view.cursorRect, 'DOM pointer click did not produce a Writer caret callback', 4000);
+    record('dom-mouse-caret', {cursorRect: view.cursorRect});
+''', '''    // DOM mouse probe under a hostile host: document-capture listeners swallow
+    // the events, so only our earlier window-capture path can see them.
+    view.cursorRect = null;
+    view._renderCursor();
+    const docRect = view.documentLayer.getBoundingClientRect();
+    const page = view.pageLayer.firstElementChild.getBoundingClientRect();
+    const clickX = Math.max(page.left + 80, docRect.left + 40);
+    const clickY = Math.max(page.top + 80, docRect.top + 40);
+    const swallow = (event) => event.stopImmediatePropagation();
+    for (const type of ['pointerdown', 'pointerup', 'keydown', 'beforeinput']) {
+      document.addEventListener(type, swallow, true);
+    }
+    view.ime.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 1, pointerType: 'mouse', button: 0, buttons: 1,
+      clientX: clickX, clientY: clickY, bubbles: true, cancelable: true
+    }));
+    view.ime.dispatchEvent(new PointerEvent('pointerup', {
+      pointerId: 1, pointerType: 'mouse', button: 0, buttons: 0,
+      clientX: clickX, clientY: clickY, bubbles: true, cancelable: true
+    }));
+    await waitFor(() => view.cursorRect && getComputedStyle(view.cursor).display !== 'none',
+      'DOM pointer click did not display a Writer caret', 4000);
+    view.ime.dispatchEvent(new InputEvent('beforeinput', {
+      inputType: 'insertText', data: 'K', bubbles: true, cancelable: true
+    }));
+    const clickedText = await waitFor(async () => {
       const value = await client.readText();
-      return value.text.includes('C') ? value.text : '';
-    }, 'Text input after synchronous LOK caret placement did not reach Writer');
-    record('lok-sync-caret', {payload: syncCursorPayload, text: syncCaretText});
+      return value.text.includes('K') ? value.text : '';
+    }, 'Text typed after DOM pointer click did not reach Writer');
+    for (const type of ['pointerdown', 'pointerup', 'keydown', 'beforeinput']) {
+      document.removeEventListener(type, swallow, true);
+    }
+    record('dom-mouse-caret', {cursorRect: view.cursorRect, text: clickedText});
 ''')
 
 print('applied ROW input/render fix v2')
