@@ -1,0 +1,64 @@
+name: Reborn Office Worker heartbeat v10
+
+on:
+  push:
+    branches: [row-office-input-render-fix]
+    paths:
+      - '.github/workflows/row-office-worker-heartbeat-v10.yml'
+      - 'row-office-browser/**'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  diagnose-worker-loop:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download proven LibreOffice runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: row-office-core-port-evidence
+          path: evidence
+          github-token: ${{ github.token }}
+          run-id: 35040735653
+          repository: yuelangxu/Reborn-XP-app-market
+
+      - name: Assemble v10 diagnostic runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in v2 v3 v4 v5 v6 v6b v7 v8 v8c v9 v10; do
+            python3 "row-office-browser/apply-input-render-fix-${v}.py"
+          done
+          cp row-office-browser/acceptance-v8-trace.html row-office-browser/acceptance.html
+          wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
+          test -n "$wasm"
+          old_root=$(dirname "$(dirname "$wasm")")
+          rm -rf current-runtime
+          cp -a "$old_root" current-runtime
+          for file in acceptance.html row-office-client.js row-office-view.js row-office-worker-loader.js row-office-thread.js reborn-office.js; do
+            cp "row-office-browser/$file" "current-runtime/$file"
+          done
+          node --check current-runtime/row-office-view.js
+          node --check current-runtime/row-office-client.js
+          node --check current-runtime/row-office-thread.js
+          grep -q "phase: 'received'" current-runtime/row-office-thread.js
+          grep -q "worker-heartbeat" current-runtime/row-office-thread.js
+          grep -q 'workerHeartbeat' current-runtime/acceptance.html
+
+      - name: Run 30 second freeze trace
+        shell: bash
+        run: |
+          set +e
+          ROW_ACCEPTANCE_TIMEOUT_SECONDS=30 bash row-office-browser/run-acceptance.sh current-runtime
+          code=$?
+          echo "ROW_DIAGNOSTIC_EXIT=$code"
+          echo '--- final trace ---'
+          cat current-runtime/row-acceptance-trace.log || true
+          echo '--- result ---'
+          cat current-runtime/row-acceptance-result.json || true
+          exit $code
