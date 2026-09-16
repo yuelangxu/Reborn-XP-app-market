@@ -39,6 +39,7 @@ jobs:
           python3 row-office-browser/apply-input-render-fix-v6b.py
           python3 row-office-browser/apply-input-render-fix-v7.py
           python3 row-office-browser/apply-input-render-fix-v8.py
+          python3 row-office-browser/apply-input-render-fix-v8c.py
           cp row-office-browser/acceptance-v8-trace.html row-office-browser/acceptance.html
           wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
           test -n "$wasm"
@@ -57,6 +58,9 @@ jobs:
           ! grep -q 'focusWatchdog' current-runtime/row-office-view.js
           ! grep -q 'setPointerCapture' current-runtime/row-office-view.js
           ! grep -q 'releasePointerCapture' current-runtime/row-office-view.js
+          ! grep -q 'setInterval(() =>.*readText' current-runtime/row-office-view.js
+          grep -q '_requestNow' current-runtime/row-office-client.js
+          grep -q 'rpc-client-debug' current-runtime/row-office-client.js
           grep -q 'const TILE_CSS = 256' current-runtime/row-office-view.js
           grep -q 'workerPhase' current-runtime/row-office-view.js
           chromedriver --version
@@ -79,14 +83,14 @@ jobs:
           required={
             'first-input-before-tile','first-tile-after-input',
             'native-textarea-sustained','host-focus-respected',
-            'explicit-refocus-input','repeated-native-ime','outside-page-guard'
+            'click-refocus-input','repeated-native-ime','outside-page-guard'
           }
           missing=required-names
           assert not missing, sorted(missing)
           trusted=open('current-runtime/row-trusted-input.log',encoding='utf-8').read()
           assert '"status": "pass"' in trusted or '"status":"pass"' in trusted, trusted
           assert 'Writer stole focus back' not in trusted
-          print('ROW v8 host-safe acceptance passed')
+          print('ROW v8c host-safe synchronous-dispatch acceptance passed')
           PY
           rm -f current-runtime/trusted-input.html
 
@@ -116,11 +120,13 @@ jobs:
             assert z.testzip() is None
             assert z.getinfo('RebornOfficeWasm/runtime/soffice.wasm').file_size > 100_000_000
             view=z.read('RebornOfficeWasm/row-office-view.js').decode()
+            client=z.read('RebornOfficeWasm/row-office-client.js').decode()
             assert "version: 'v8-host-safe'" in view
             assert 'inputQueue' not in view
             assert 'focusWatchdog' not in view
             assert 'setPointerCapture' not in view
-          print('v8 package verified')
+            assert '_requestNow' in client
+          print('v8c package verified')
           PY
 
       - name: Upload v8 candidate
