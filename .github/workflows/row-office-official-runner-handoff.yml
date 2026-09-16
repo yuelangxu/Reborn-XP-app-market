@@ -1,0 +1,21 @@
+name: Reborn Office official runner handoff
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-runtime-probe]
+    paths:
+      - '.github/workflows/row-office-official-runner-handoff.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: row-office-core-port-refs/heads/row-office-core-port
+  cancel-in-progress: true
+
+jobs:
+  handoff:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'Final delivery takes priority; Run 28 already proved the unchanged core at the same product commit.'
