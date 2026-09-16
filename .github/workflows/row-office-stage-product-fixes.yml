@@ -47,21 +47,38 @@ jobs:
           ! grep -q -- '--virtual-time-budget' row-office-browser/run-acceptance.sh
           grep -q 'row-office-runtime-diagnostics' .github/workflows/row-office-core-port.yml
           git diff --stat
-          git diff
 
-      - name: Commit staged product patch
+      - name: Export staged workflow files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf staged-workflows
+          mkdir -p staged-workflows
+          cp product/.github/workflows/row-office-browser-smoke.yml staged-workflows/
+          cp product/.github/workflows/row-office-core-port.yml staged-workflows/
+
+      - name: Upload staged workflow files
+        uses: actions/upload-artifact@v4
+        with:
+          name: row-office-staged-workflows
+          retention-days: 7
+          if-no-files-found: error
+          path: staged-workflows/
+
+      - name: Commit ordinary product files
         working-directory: product
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'ROW Runtime Fix Bot'
           git config user.email 'row-runtime-fix@users.noreply.github.com'
+          git restore -- \
+            .github/workflows/row-office-browser-smoke.yml \
+            .github/workflows/row-office-core-port.yml
           git add \
             row-office-browser/acceptance.html \
             row-office-browser/run-acceptance.sh \
-            row-office-browser/row-office-view.js \
-            .github/workflows/row-office-browser-smoke.yml \
-            .github/workflows/row-office-core-port.yml
+            row-office-browser/row-office-view.js
           git commit -m 'Use wall-clock Writer acceptance and harden canvas input'
           git push origin HEAD:row-office-product-fixes
           echo "STAGED_COMMIT=$(git rev-parse HEAD)"
