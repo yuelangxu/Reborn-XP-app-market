@@ -16,7 +16,7 @@
   async function report(x){try{await fetch('/__row_result__',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(x)})}catch(_){}}
   async function trace(stage,extra={}){
     const d=view&&view.debugState?view.debugState:{};
-    const snap={stage,t:Math.round(performance.now()),q:d.commitsQueued,ok:d.commitsOk,err:d.commitsError,workerPhase:d.workerPhase,workerCommand:d.workerCommand,workerId:d.workerId,active:view?view.active:null,...extra};
+    const snap={stage,t:Math.round(performance.now()),q:d.commitsQueued,ok:d.commitsOk,err:d.commitsError,clientPostCommand:d.clientPostCommand,clientPostId:d.clientPostId,workerPhase:d.workerPhase,workerCommand:d.workerCommand,workerId:d.workerId,active:view?view.active:null,...extra};
     try{await fetch('/__row_trace__',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(snap)})}catch(_){}
   }
   heartbeat=setInterval(()=>{trace('heartbeat')},500);
@@ -50,9 +50,13 @@
     rec('isolated-input-frame',{frameTag:view.inputFrame.tagName,innerTag:view.ime.tagName});
 
     const page=view.pageLayer.firstElementChild.getBoundingClientRect();
-    const target=document.elementFromPoint(page.left+80,page.top+80)||view.documentLayer;
-    target.dispatchEvent(new PointerEvent('pointerdown',{pointerId:17,pointerType:'mouse',button:0,buttons:1,clientX:page.left+80,clientY:page.top+80,bubbles:true,cancelable:true}));
-    target.dispatchEvent(new PointerEvent('pointerup',{pointerId:17,pointerType:'mouse',button:0,buttons:0,clientX:page.left+80,clientY:page.top+80,bubbles:true,cancelable:true}));
+    function clickWriter(pointerId){
+      const x=page.left+80,y=page.top+80;
+      const node=document.elementFromPoint(x,y)||view.documentLayer;
+      node.dispatchEvent(new PointerEvent('pointerdown',{pointerId,pointerType:'mouse',button:0,buttons:1,clientX:x,clientY:y,bubbles:true,cancelable:true}));
+      node.dispatchEvent(new PointerEvent('pointerup',{pointerId,pointerType:'mouse',button:0,buttons:0,clientX:x,clientY:y,bubbles:true,cancelable:true}));
+    }
+    clickWriter(17);
     await wait(()=>document.activeElement===view.inputFrame&&view.inputFrame.contentDocument.activeElement===view.ime,'input frame never focused',3000); await trace('writer-focused');
 
     function nativeCommit(text){
@@ -81,11 +85,11 @@
     ok(document.activeElement===sink,'Writer stole focus back from host control');ok(hostClicks===1,'host control click did not complete');ok(view.active===false,'Writer remained active after host focus change');
     rec('host-focus-respected',{hostClicks,active:view.active});
 
-    view.focus(); await trace('explicit-refocus-called');
-    await wait(()=>document.activeElement===view.inputFrame&&view.inputFrame.contentDocument.activeElement===view.ime,'explicit Writer refocus failed',3000); await trace('explicit-refocus-ok');
-    nativeCommit('Z'); await trace('refocus-z-posted');
-    await wait(async()=>{const t=(await client.readText()).text;return t.endsWith('Z')?t:''},'typing failed after explicit Writer refocus'); await trace('refocus-z-ok');
-    rec('explicit-refocus-input',{ok:true});
+    clickWriter(19); await trace('writer-reclick-called');
+    await wait(()=>document.activeElement===view.inputFrame&&view.inputFrame.contentDocument.activeElement===view.ime,'Writer page click did not refocus editor',3000); await trace('writer-reclick-ok');
+    nativeCommit('Z'); await trace('reclick-z-posted');
+    await wait(async()=>{const t=(await client.readText()).text;return t.endsWith('Z')?t:''},'typing failed after clicking back into Writer'); await trace('reclick-z-ok');
+    rec('click-refocus-input',{ok:true});
 
     function compositionCommit(text){
       view.ime.dispatchEvent(new CompositionEvent('compositionstart',{data:'',bubbles:true}));
