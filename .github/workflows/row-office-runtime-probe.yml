@@ -1,0 +1,69 @@
+name: Reborn Office runtime evidence extractor
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-runtime-probe]
+    paths:
+      - '.github/workflows/row-office-runtime-probe.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  extract-runtime-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download Run 28 evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: row-office-core-port-evidence
+          path: evidence
+          github-token: ${{ github.token }}
+          run-id: 35040735653
+
+      - name: Distill acceptance diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tiny-evidence
+          names=(
+            row-acceptance-dom.txt
+            row-acceptance-chrome.log
+            row-acceptance-http.log
+            soffice-inspection.json
+            row-build-summary.json
+            runtime-files.txt
+            ROW-runtime-manifest.sha256
+          )
+          for name in "${names[@]}"; do
+            src=$(find evidence -type f -name "$name" -print -quit)
+            if [ -n "$src" ]; then
+              cp "$src" "tiny-evidence/$name"
+            fi
+          done
+
+          echo '--- distilled files ---'
+          find tiny-evidence -type f -maxdepth 1 -printf '%f %s bytes\n' | sort
+          echo '--- acceptance DOM ---'
+          cat tiny-evidence/row-acceptance-dom.txt 2>/dev/null || true
+          echo '--- Chrome log ---'
+          cat tiny-evidence/row-acceptance-chrome.log 2>/dev/null || true
+          echo '--- HTTP log ---'
+          cat tiny-evidence/row-acceptance-http.log 2>/dev/null || true
+          echo '--- soffice inspection ---'
+          cat tiny-evidence/soffice-inspection.json 2>/dev/null || true
+          echo '--- build summary ---'
+          cat tiny-evidence/row-build-summary.json 2>/dev/null || true
+
+          test -s tiny-evidence/row-acceptance-dom.txt
+
+      - name: Upload tiny runtime diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: row-office-run28-runtime-diagnostics
+          retention-days: 14
+          if-no-files-found: error
+          path: tiny-evidence/
