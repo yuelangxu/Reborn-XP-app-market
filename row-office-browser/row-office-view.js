@@ -47,8 +47,10 @@
     const parts = String(value || '').match(/-?\d+/g);
     if (!parts || parts.length < 4) return null;
     return {
-      x: Number(parts[0]), y: Number(parts[1]),
-      width: Number(parts[2]), height: Number(parts[3])
+      x: Number(parts[0]),
+      y: Number(parts[1]),
+      width: Number(parts[2]),
+      height: Number(parts[3])
     };
   }
 
@@ -76,6 +78,22 @@
       && a.y < b.y + b.height && a.y + a.height > b.y;
   }
 
+  function isEditableTarget(target) {
+    if (!target || target.nodeType !== 1) return false;
+    if (target.isContentEditable) return true;
+    const tag = String(target.tagName || '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select';
+  }
+
+  function safeFocus(node) {
+    if (!node || typeof node.focus !== 'function') return;
+    try {
+      node.focus({preventScroll: true});
+    } catch (_) {
+      try { node.focus(); } catch (_) {}
+    }
+  }
+
   class RowOfficeCanvasView {
     constructor(client, surface, options = {}) {
       if (!client) throw new Error('ROW_VIEW_CLIENT_REQUIRED');
@@ -96,8 +114,10 @@
       this.cursorVisible = true;
       this.selectionRects = [];
       this.destroyed = false;
+      this.active = false;
       this.offCallback = null;
       this.resizeObserver = null;
+      this.refocusTimer = 0;
 
       this._buildDom();
       this._bindEvents();
@@ -109,62 +129,117 @@
 
     _buildDom() {
       this.surface.innerHTML = '';
-      this.surface.style.padding = '0';
-      this.surface.style.overflow = 'auto';
-      this.surface.style.background = '#808080';
-      this.surface.style.outline = 'none';
+      Object.assign(this.surface.style, {
+        padding: '0',
+        overflow: 'auto',
+        background: '#808080',
+        outline: 'none',
+        isolation: 'isolate',
+        contain: 'paint',
+        overscrollBehavior: 'contain'
+      });
 
       this.stage = document.createElement('div');
       this.stage.className = 'row-office-stage';
       Object.assign(this.stage.style, {
         position: 'relative',
         minWidth: '100%',
-        minHeight: '100%'
+        minHeight: '100%',
+        background: '#808080',
+        isolation: 'isolate',
+        contain: 'paint'
       });
 
       this.documentLayer = document.createElement('div');
       this.documentLayer.className = 'row-office-document-layer';
       Object.assign(this.documentLayer.style, {
         position: 'absolute',
-        background: '#fff',
-        boxShadow: '0 0 0 1px #666, 2px 2px 8px rgba(0,0,0,.35)'
+        background: 'transparent',
+        overflow: 'visible',
+        isolation: 'isolate'
+      });
+
+      // LOK document bounds include transparent page margins. Draw real page
+      // rectangles underneath the tile layer instead of flattening the whole
+      // document bounds into one white rectangle.
+      this.pageLayer = document.createElement('div');
+      this.pageLayer.className = 'row-office-page-layer';
+      Object.assign(this.pageLayer.style, {
+        position: 'absolute',
+        inset: '0',
+        zIndex: '0',
+        pointerEvents: 'none'
       });
 
       this.tileLayer = document.createElement('div');
+      this.tileLayer.className = 'row-office-tile-layer';
       Object.assign(this.tileLayer.style, {
-        position: 'absolute', inset: '0', overflow: 'hidden'
+        position: 'absolute',
+        inset: '0',
+        overflow: 'hidden',
+        zIndex: '10',
+        pointerEvents: 'none',
+        background: 'transparent'
       });
+
       this.overlayLayer = document.createElement('div');
       Object.assign(this.overlayLayer.style, {
-        position: 'absolute', inset: '0', pointerEvents: 'none', zIndex: '20'
+        position: 'absolute',
+        inset: '0',
+        pointerEvents: 'none',
+        zIndex: '20'
       });
 
       this.cursor = document.createElement('div');
       Object.assign(this.cursor.style, {
-        position: 'absolute', background: '#111', width: '1px',
-        minHeight: '14px', display: 'none', zIndex: '30'
+        position: 'absolute',
+        background: '#111',
+        width: '1px',
+        minHeight: '14px',
+        display: 'none',
+        zIndex: '30'
       });
 
       this.selectionLayer = document.createElement('div');
       Object.assign(this.selectionLayer.style, {
-        position: 'absolute', inset: '0', pointerEvents: 'none', zIndex: '25'
+        position: 'absolute',
+        inset: '0',
+        pointerEvents: 'none',
+        zIndex: '25'
       });
 
+      // A real editable control is needed for composition/IME. Reborn XP may
+      // move focus to its own window chrome after pointer bubbling, so a second
+      // document-level keyboard path recovers ordinary typing when that happens.
       this.ime = document.createElement('textarea');
       this.ime.setAttribute('aria-label', 'Writer text input');
       this.ime.autocomplete = 'off';
       this.ime.autocapitalize = 'off';
       this.ime.spellcheck = false;
+      this.ime.tabIndex = -1;
       Object.assign(this.ime.style, {
-        position: 'absolute', width: '2px', height: '20px', opacity: '0.01',
-        border: '0', outline: '0', padding: '0', margin: '0', resize: 'none',
-        overflow: 'hidden', color: 'transparent', background: 'transparent',
-        caretColor: 'transparent', zIndex: '50', pointerEvents: 'none'
+        position: 'absolute',
+        width: '4px',
+        height: '20px',
+        opacity: '0',
+        border: '0',
+        outline: '0',
+        padding: '0',
+        margin: '0',
+        resize: 'none',
+        overflow: 'hidden',
+        color: 'transparent',
+        background: 'transparent',
+        caretColor: 'transparent',
+        fontSize: '16px',
+        zIndex: '50',
+        pointerEvents: 'none'
       });
 
       this.overlayLayer.appendChild(this.selectionLayer);
       this.overlayLayer.appendChild(this.cursor);
       this.overlayLayer.appendChild(this.ime);
+      this.documentLayer.appendChild(this.pageLayer);
       this.documentLayer.appendChild(this.tileLayer);
       this.documentLayer.appendChild(this.overlayLayer);
       this.stage.appendChild(this.documentLayer);
@@ -178,20 +253,65 @@
         if (this.mouseDown) this._pointer(event, LOK_MOUSEEVENT_MOUSEMOVE);
       };
       this.onPointerUp = (event) => this._pointer(event, LOK_MOUSEEVENT_MOUSEBUTTONUP);
-      this.onKeyDown = (event) => this._keyDown(event);
-      this.onBeforeInput = (event) => this._beforeInput(event);
-      this.onCompositionStart = () => { this.composing = true; };
+
+      this.onImeKeyDown = (event) => this._keyDown(event, true);
+      this.onImeBeforeInput = (event) => this._beforeInput(event);
+      this.onImeInput = () => this._inputFallback();
+      this.onCompositionStart = () => {
+        this.active = true;
+        this.composing = true;
+        this.compositionCommit = '';
+      };
       this.onCompositionEnd = (event) => this._compositionEnd(event);
+      this.onImeBlur = () => {
+        if (!this.active || this.destroyed) return;
+        clearTimeout(this.refocusTimer);
+        this.refocusTimer = setTimeout(() => this._ensureInputFocus(), 0);
+      };
+
+      this.onDocumentPointerDownCapture = (event) => {
+        if (!this.surface.contains(event.target)) this.active = false;
+      };
+      this.onDocumentPointerUpCapture = () => {
+        if (!this.destroyed) this._scheduleVisible(true);
+      };
+      this.onDocumentKeyDownCapture = (event) => {
+        if (!this.active || this.destroyed || event.target === this.ime) return;
+        if (isEditableTarget(event.target)) return;
+        this._keyDown(event, false);
+      };
+
+      this.onWindowFocus = () => {
+        if (this.active) this._ensureInputFocus();
+        this._scheduleVisible(true);
+      };
+      this.onPageShow = () => this._scheduleVisible(true);
+      this.onVisibilityChange = () => {
+        if (!document.hidden) {
+          if (this.active) this._ensureInputFocus();
+          this._scheduleVisible(true);
+        }
+      };
 
       this.surface.addEventListener('scroll', this.onScroll, {passive: true});
       this.documentLayer.addEventListener('pointerdown', this.onPointerDown);
       this.documentLayer.addEventListener('pointermove', this.onPointerMove);
       this.documentLayer.addEventListener('pointerup', this.onPointerUp);
       this.documentLayer.addEventListener('pointercancel', this.onPointerUp);
-      this.ime.addEventListener('keydown', this.onKeyDown);
-      this.ime.addEventListener('beforeinput', this.onBeforeInput);
+
+      this.ime.addEventListener('keydown', this.onImeKeyDown);
+      this.ime.addEventListener('beforeinput', this.onImeBeforeInput);
+      this.ime.addEventListener('input', this.onImeInput);
       this.ime.addEventListener('compositionstart', this.onCompositionStart);
       this.ime.addEventListener('compositionend', this.onCompositionEnd);
+      this.ime.addEventListener('blur', this.onImeBlur);
+
+      document.addEventListener('pointerdown', this.onDocumentPointerDownCapture, true);
+      document.addEventListener('pointerup', this.onDocumentPointerUpCapture, true);
+      document.addEventListener('keydown', this.onDocumentKeyDownCapture, true);
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+      window.addEventListener('focus', this.onWindowFocus);
+      window.addEventListener('pageshow', this.onPageShow);
 
       this.offCallback = this.client.on('lok-callback', (message) => {
         this._handleLokCallback(message.callbackType, message.payload);
@@ -208,7 +328,7 @@
 
     async mount() {
       await this.reloadDocument();
-      this.ime.focus({preventScroll: true});
+      this.focus();
     }
 
     async reloadDocument() {
@@ -249,26 +369,64 @@
         height: `${heightPx + DOC_MARGIN * 2}px`
       });
       Object.assign(this.documentLayer.style, {
-        left: `${docLeft}px`, top: `${DOC_MARGIN}px`,
-        width: `${widthPx}px`, height: `${heightPx}px`
+        left: `${docLeft}px`,
+        top: `${DOC_MARGIN}px`,
+        width: `${widthPx}px`,
+        height: `${heightPx}px`
       });
+
+      this._renderPageBackdrops();
       this._renderCursor();
       this._renderSelection();
+    }
+
+    _renderPageBackdrops() {
+      this.pageLayer.innerHTML = '';
+      if (!this.info) return;
+
+      const pages = parseRectList(this.info.pageRectangles);
+      const rects = pages.length ? pages : [{
+        x: 0,
+        y: 0,
+        width: this.info.widthTwips,
+        height: this.info.heightTwips
+      }];
+
+      for (const r of rects) {
+        const page = document.createElement('div');
+        page.className = 'row-office-page-backdrop';
+        Object.assign(page.style, {
+          position: 'absolute',
+          left: `${r.x / this.twipsPerCssPx}px`,
+          top: `${r.y / this.twipsPerCssPx}px`,
+          width: `${Math.max(1, r.width / this.twipsPerCssPx)}px`,
+          height: `${Math.max(1, r.height / this.twipsPerCssPx)}px`,
+          boxSizing: 'border-box',
+          background: '#fff',
+          boxShadow: '0 0 0 1px #666, 2px 2px 8px rgba(0,0,0,.35)'
+        });
+        this.pageLayer.appendChild(page);
+      }
     }
 
     _layoutAndSchedule() {
       if (!this.info) return;
       this._layoutDocument();
-      this._scheduleVisible();
+      this._scheduleVisible(true);
     }
 
     _visibleDocumentRectPx() {
       const x = Math.max(0, this.surface.scrollLeft - this.docLeft);
       const y = Math.max(0, this.surface.scrollTop - this.docTop);
-      const right = Math.min(this.documentWidthPx, this.surface.scrollLeft + this.surface.clientWidth - this.docLeft);
-      const bottom = Math.min(this.documentHeightPx, this.surface.scrollTop + this.surface.clientHeight - this.docTop);
+      const right = Math.min(
+        this.documentWidthPx,
+        this.surface.scrollLeft + this.surface.clientWidth - this.docLeft);
+      const bottom = Math.min(
+        this.documentHeightPx,
+        this.surface.scrollTop + this.surface.clientHeight - this.docTop);
       return {
-        x, y,
+        x,
+        y,
         width: Math.max(0, right - x),
         height: Math.max(0, bottom - y)
       };
@@ -331,12 +489,28 @@
       const canvas = document.createElement('canvas');
       canvas.dataset.rowTile = key;
       Object.assign(canvas.style, {
-        position: 'absolute', left: `${x}px`, top: `${y}px`,
-        width: `${cssWidth}px`, height: `${cssHeight}px`,
-        display: 'block', background: '#fff'
+        position: 'absolute',
+        left: `${x}px`,
+        top: `${y}px`,
+        width: `${cssWidth}px`,
+        height: `${cssHeight}px`,
+        display: 'block',
+        background: 'transparent',
+        imageRendering: 'auto'
       });
       this.tileLayer.appendChild(canvas);
-      tile = {key, col, row, x, y, cssWidth, cssHeight, canvas, dirty: true, rendering: false};
+      tile = {
+        key,
+        col,
+        row,
+        x,
+        y,
+        cssWidth,
+        cssHeight,
+        canvas,
+        dirty: true,
+        rendering: false
+      };
       this.tiles.set(key, tile);
       return tile;
     }
@@ -358,11 +532,16 @@
           heightTwips: Math.max(1, Math.round(tile.cssHeight * this.twipsPerCssPx))
         });
         if (this.destroyed || epoch !== this.renderEpoch || !this.tiles.has(tile.key)) return;
+
         tile.canvas.width = result.canvasWidth;
         tile.canvas.height = result.canvasHeight;
         const pixels = new Uint8ClampedArray(result.rgba);
         const image = new ImageData(pixels, result.canvasWidth, result.canvasHeight);
-        const ctx = tile.canvas.getContext('2d', {alpha: false});
+
+        // LOK deliberately returns transparent pixels outside physical pages.
+        // Keeping alpha prevents those pixels from becoming black rectangles.
+        const ctx = tile.canvas.getContext('2d', {alpha: true});
+        ctx.clearRect(0, 0, result.canvasWidth, result.canvasHeight);
         ctx.putImageData(image, 0, 0);
       } catch (error) {
         tile.dirty = true;
@@ -402,8 +581,10 @@
       };
       for (const tile of this.tiles.values()) {
         const tileRect = {
-          x: tile.x, y: tile.y,
-          width: tile.cssWidth, height: tile.cssHeight
+          x: tile.x,
+          y: tile.y,
+          width: tile.cssWidth,
+          height: tile.cssHeight
         };
         if (intersects(pxRect, tileRect)) tile.dirty = true;
       }
@@ -462,10 +643,17 @@
       const width = Math.max(1, r.width / this.twipsPerCssPx);
       const height = Math.max(12, r.height / this.twipsPerCssPx);
       Object.assign(this.cursor.style, {
-        display: 'block', left: `${x}px`, top: `${y}px`,
-        width: `${Math.min(width, 2)}px`, height: `${height}px`
+        display: 'block',
+        left: `${x}px`,
+        top: `${y}px`,
+        width: `${Math.min(width, 2)}px`,
+        height: `${height}px`
       });
-      Object.assign(this.ime.style, {left: `${x}px`, top: `${y}px`, height: `${height}px`});
+      Object.assign(this.ime.style, {
+        left: `${x}px`,
+        top: `${y}px`,
+        height: `${height}px`
+      });
     }
 
     _renderSelection() {
@@ -517,82 +705,139 @@
       return value;
     }
 
+    _activateInput() {
+      this.active = true;
+      this._ensureInputFocus();
+      requestAnimationFrame(() => this._ensureInputFocus());
+      clearTimeout(this.refocusTimer);
+      this.refocusTimer = setTimeout(() => this._ensureInputFocus(), 0);
+    }
+
+    _ensureInputFocus() {
+      if (!this.active || this.destroyed) return;
+      if (document.activeElement !== this.ime) {
+        this.ime.value = '';
+        safeFocus(this.ime);
+      }
+    }
+
     _pointer(event, type) {
       const point = this._eventDocPoint(event);
       if (!point) return;
       event.preventDefault();
+
       if (type === LOK_MOUSEEVENT_MOUSEBUTTONDOWN) {
         this.mouseDown = true;
+        this._activateInput();
         try { this.documentLayer.setPointerCapture(event.pointerId); } catch (_) {}
-        this.ime.focus({preventScroll: true});
       } else if (type === LOK_MOUSEEVENT_MOUSEBUTTONUP) {
         this.mouseDown = false;
         try { this.documentLayer.releasePointerCapture(event.pointerId); } catch (_) {}
+        this._activateInput();
       }
+
       this.client.postLokMouse(
-        type, point.xTwips, point.yTwips,
+        type,
+        point.xTwips,
+        point.yTwips,
         event.detail > 1 ? event.detail : 1,
         this._mouseButtons(event, type),
         this._modifierMask(event)
-      ).then(() => this._scheduleVisible()).catch((error) => console.error('[ROW mouse]', error));
+      ).then(() => this._scheduleVisible())
+        .catch((error) => console.error('[ROW mouse]', error));
     }
 
     async _sendSpecialKey(base, event) {
       const code = base | this._modifierMask(event);
       await this.client.postLokKey(LOK_KEYEVENT_KEYINPUT, 0, code);
       await this.client.postLokKey(LOK_KEYEVENT_KEYUP, 0, code);
-      this._scheduleVisible();
+      this._scheduleVisible(true);
     }
 
-    _keyDown(event) {
+    _postText(text) {
+      const value = String(text || '');
+      if (!value) return Promise.resolve();
+      return this.client.postTextInput(value)
+        .then(() => this._scheduleVisible(true));
+    }
+
+    _keyDown(event, fromIme) {
       if (this.composing || event.isComposing) return;
-      const lower = String(event.key || '').toLowerCase();
-      if (event.ctrlKey || event.metaKey) {
+
+      const key = String(event.key || '');
+      const lower = key.toLowerCase();
+      const altGraph = typeof event.getModifierState === 'function'
+        && event.getModifierState('AltGraph');
+      const commandModifier = (event.ctrlKey || event.metaKey) && !altGraph;
+
+      if (commandModifier) {
         const commands = {
-          b: '.uno:Bold', i: '.uno:Italic', u: '.uno:Underline',
+          b: '.uno:Bold',
+          i: '.uno:Italic',
+          u: '.uno:Underline',
           z: event.shiftKey ? '.uno:Redo' : '.uno:Undo',
-          y: '.uno:Redo', a: '.uno:SelectAll', x: '.uno:Cut'
+          y: '.uno:Redo',
+          a: '.uno:SelectAll',
+          x: '.uno:Cut'
         };
         if (commands[lower]) {
           event.preventDefault();
-          this.client.postUnoCommand(commands[lower]).then(() => this._scheduleVisible(true));
+          this.client.postUnoCommand(commands[lower])
+            .then(() => this._scheduleVisible(true));
           return;
         }
         if (lower === 'c') {
           event.preventDefault();
-          this.client.lokSelection().then(({text}) => navigator.clipboard?.writeText(text || ''));
+          this.client.lokSelection()
+            .then(({text}) => navigator.clipboard?.writeText(text || ''));
           return;
         }
         if (lower === 'v') {
           event.preventDefault();
           if (navigator.clipboard?.readText) {
-            navigator.clipboard.readText().then((text) => this.client.postTextInput(text))
-              .then(() => this._scheduleVisible(true)).catch((error) => console.warn('[ROW paste]', error));
+            navigator.clipboard.readText()
+              .then((text) => this._postText(text))
+              .catch((error) => console.warn('[ROW paste]', error));
           }
           return;
         }
       }
 
-      if (event.key === 'Backspace') {
+      if (key === 'Backspace') {
         event.preventDefault();
-        this.client.removeTextContext(1, 0).then(() => this._scheduleVisible(true));
+        this.client.removeTextContext(1, 0)
+          .then(() => this._scheduleVisible(true));
         return;
       }
-      if (event.key === 'Delete') {
+      if (key === 'Delete') {
         event.preventDefault();
-        this.client.removeTextContext(0, 1).then(() => this._scheduleVisible(true));
+        this.client.removeTextContext(0, 1)
+          .then(() => this._scheduleVisible(true));
         return;
       }
-      const base = KEY[event.key];
+
+      const base = KEY[key];
       if (base !== undefined) {
         event.preventDefault();
-        this._sendSpecialKey(base, event).catch((error) => console.error('[ROW key]', error));
+        this._sendSpecialKey(base, event)
+          .catch((error) => console.error('[ROW key]', error));
+        return;
+      }
+
+      if (!fromIme && key.length === 1 && (!event.altKey || altGraph)
+          && (!event.ctrlKey || altGraph) && !event.metaKey) {
+        event.preventDefault();
+        this._postText(key)
+          .catch((error) => console.error('[ROW fallback key]', error));
+        this._ensureInputFocus();
       }
     }
 
     _beforeInput(event) {
       if (this.composing || event.isComposing || event.inputType === 'insertCompositionText') return;
-      if (event.inputType === 'insertText' && event.data) {
+
+      if ((event.inputType === 'insertText' || event.inputType === 'insertReplacementText')
+          && event.data) {
         if (this.compositionCommit && event.data === this.compositionCommit) {
           this.compositionCommit = '';
           event.preventDefault();
@@ -600,9 +845,42 @@
           return;
         }
         event.preventDefault();
-        this.client.postTextInput(event.data).then(() => this._scheduleVisible(true));
         this.ime.value = '';
+        this._postText(event.data)
+          .catch((error) => console.error('[ROW beforeinput]', error));
+        return;
       }
+
+      if (event.inputType === 'deleteContentBackward') {
+        event.preventDefault();
+        this.client.removeTextContext(1, 0)
+          .then(() => this._scheduleVisible(true));
+        return;
+      }
+      if (event.inputType === 'deleteContentForward') {
+        event.preventDefault();
+        this.client.removeTextContext(0, 1)
+          .then(() => this._scheduleVisible(true));
+        return;
+      }
+      if (event.inputType === 'insertParagraph' || event.inputType === 'insertLineBreak') {
+        event.preventDefault();
+        this._sendSpecialKey(KEY.Enter, event)
+          .catch((error) => console.error('[ROW enter]', error));
+      }
+    }
+
+    _inputFallback() {
+      if (this.composing || this.destroyed) return;
+      const text = String(this.ime.value || '');
+      this.ime.value = '';
+      if (!text) return;
+      if (this.compositionCommit && text === this.compositionCommit) {
+        this.compositionCommit = '';
+        return;
+      }
+      this._postText(text)
+        .catch((error) => console.error('[ROW input fallback]', error));
     }
 
     _compositionEnd(event) {
@@ -611,8 +889,10 @@
       this.ime.value = '';
       if (!text) return;
       this.compositionCommit = text;
-      setTimeout(() => { this.compositionCommit = ''; }, 80);
-      this.client.postTextInput(text).then(() => this._scheduleVisible(true))
+      setTimeout(() => {
+        if (this.compositionCommit === text) this.compositionCommit = '';
+      }, 120);
+      this._postText(text)
         .catch((error) => console.error('[ROW IME]', error));
     }
 
@@ -627,23 +907,37 @@
     }
 
     focus() {
-      this.ime.focus({preventScroll: true});
+      this._activateInput();
     }
 
     destroy() {
       if (this.destroyed) return;
       this.destroyed = true;
+      this.active = false;
+      clearTimeout(this.refocusTimer);
       this.renderEpoch += 1;
       this._dropAllTiles();
+
       this.surface.removeEventListener('scroll', this.onScroll);
       this.documentLayer.removeEventListener('pointerdown', this.onPointerDown);
       this.documentLayer.removeEventListener('pointermove', this.onPointerMove);
       this.documentLayer.removeEventListener('pointerup', this.onPointerUp);
       this.documentLayer.removeEventListener('pointercancel', this.onPointerUp);
-      this.ime.removeEventListener('keydown', this.onKeyDown);
-      this.ime.removeEventListener('beforeinput', this.onBeforeInput);
+
+      this.ime.removeEventListener('keydown', this.onImeKeyDown);
+      this.ime.removeEventListener('beforeinput', this.onImeBeforeInput);
+      this.ime.removeEventListener('input', this.onImeInput);
       this.ime.removeEventListener('compositionstart', this.onCompositionStart);
       this.ime.removeEventListener('compositionend', this.onCompositionEnd);
+      this.ime.removeEventListener('blur', this.onImeBlur);
+
+      document.removeEventListener('pointerdown', this.onDocumentPointerDownCapture, true);
+      document.removeEventListener('pointerup', this.onDocumentPointerUpCapture, true);
+      document.removeEventListener('keydown', this.onDocumentKeyDownCapture, true);
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
+      window.removeEventListener('focus', this.onWindowFocus);
+      window.removeEventListener('pageshow', this.onPageShow);
+
       if (this.offCallback) this.offCallback();
       if (this.resizeObserver) this.resizeObserver.disconnect();
       if (this.onWindowResize) window.removeEventListener('resize', this.onWindowResize);
