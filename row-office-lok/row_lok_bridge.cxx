@@ -20,6 +20,7 @@
 #include <emscripten/val.h>
 
 #include <LibreOfficeKit/LibreOfficeKitEnums.h>
+#include <com/sun/star/frame/XModel.hpp>
 #include <com/sun/star/lang/XComponent.hpp>
 #include <com/sun/star/uno/Reference.hxx>
 #include <comphelper/lok.hxx>
