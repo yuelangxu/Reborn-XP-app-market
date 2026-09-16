@@ -39,7 +39,7 @@ jobs:
           python3 row-office-browser/apply-input-render-fix-v6b.py
           python3 row-office-browser/apply-input-render-fix-v7.py
           python3 row-office-browser/apply-input-render-fix-v8.py
-          cp row-office-browser/acceptance-v8.html row-office-browser/acceptance.html
+          cp row-office-browser/acceptance-v8-trace.html row-office-browser/acceptance.html
           wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
           test -n "$wasm"
           old_root=$(dirname "$(dirname "$wasm")")
@@ -65,11 +65,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Run the normal/native lifecycle gate without the old trusted driver.
           mv row-office-browser/trusted-input-driver.py row-office-browser/trusted-input-driver.py.old
           cp row-office-browser/trusted-input-driver-v8.py row-office-browser/trusted-input-driver.py
           ROW_ACCEPTANCE_TIMEOUT_SECONDS=180 bash row-office-browser/run-acceptance.sh current-runtime
           cat current-runtime/row-acceptance-result.json
+          cat current-runtime/row-acceptance-trace.log
           cat current-runtime/row-trusted-input.log
           python3 - <<'PY'
           import json
@@ -133,4 +133,5 @@ jobs:
             release-a/RebornOfficeWasm-browser-native.zip
             release-a/RebornOfficeWasm-browser-native.zip.sha256
             current-runtime/row-acceptance-result.json
+            current-runtime/row-acceptance-trace.log
             current-runtime/row-trusted-input.log
