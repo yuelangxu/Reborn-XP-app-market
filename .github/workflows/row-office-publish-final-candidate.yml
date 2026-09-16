@@ -1,0 +1,56 @@
+name: Publish Reborn Office final candidate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-runtime-probe]
+    paths:
+      - '.github/workflows/row-office-publish-final-candidate.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download fully verified final candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: RebornOfficeWasm-browser-native-final-candidate
+          path: final
+          github-token: ${{ github.token }}
+          run-id: 35050858888
+
+      - name: Verify final package digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd final
+          sha256sum -c RebornOfficeWasm-browser-native.zip.sha256
+          ls -lh RebornOfficeWasm-browser-native.zip
+
+      - name: Create prerelease and upload direct package asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: reborn-office-wasm-browser-native-candidate-20260916
+          TARGET: 968d2bc1d46f22d2bfbb29258fad3b2f22879fa6
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$TARGET" \
+              --title 'RebornOfficeWasm browser-native candidate · 2026-09-16' \
+              --notes 'Real LibreOffice Technology Writer compiled to browser WebAssembly. Single ordinary DedicatedWorker, no shared WASM memory requirement, no Docker/native backend/VNC. Browser acceptance passed ODT and DOCX round-trip, Unicode/IME text input, LibreOfficeKit geometry, and real tile rendering. Final Reborn XP host integration remains the real-machine gate.' \
+              --prerelease
+          fi
+          gh release upload "$TAG" \
+            final/RebornOfficeWasm-browser-native.zip \
+            final/RebornOfficeWasm-browser-native.zip.sha256 \
+            final/row-acceptance-result.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,isPrerelease,assets
