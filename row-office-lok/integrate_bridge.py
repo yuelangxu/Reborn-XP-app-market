@@ -8,6 +8,7 @@ thread bridge are present before Module.uno_init is resolved.
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ BRIDGE = HARNESS / "row_lok_bridge.cxx"
 TARGET = ROOT / "static/source/unoembindhelpers/RowLokBridge.cxx"
 MK = ROOT / "static/StaticLibrary_unoembind.mk"
 UNO_INIT = ROOT / "desktop/source/app/initjsunoscripting.cxx"
+YIELD_PATCH = HARNESS.parent / "row-office-port" / "patch_single_thread_yield.py"
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -30,6 +32,8 @@ if not BRIDGE.is_file():
     raise SystemExit(f"Missing staged bridge: {BRIDGE}")
 if not MK.is_file():
     raise SystemExit(f"Not a LibreOffice checkout: {ROOT}")
+if not YIELD_PATCH.is_file():
+    raise SystemExit(f"Missing single-thread yield patcher: {YIELD_PATCH}")
 
 TARGET.write_text(BRIDGE.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -86,8 +90,14 @@ EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
         encoding="utf-8",
     )
 
+# A DedicatedWorker with exactly one runtime thread must never enter headless
+# VCL's condition-variable sleep path: there is no second thread that can wake
+# it, and blocking the worker also blocks browser message/timer delivery.
+subprocess.run([sys.executable, str(YIELD_PATCH), str(ROOT)], check=True)
+
 print(f"ROW LOK bridge copied to {TARGET.relative_to(ROOT)}")
 print("ROW LOK bridge added to whole-archived unoembind static library")
 print("ROW LOK bridge declared its Boost header dependency")
 if UNO_INIT.is_file():
     print("ROW UNO scripts use synchronous importScripts() in the DedicatedWorker")
+print("ROW single-thread headless VCL yield is non-blocking")
