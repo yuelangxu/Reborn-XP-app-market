@@ -76,7 +76,6 @@ def main():
         err=execute(sid,'return window.__rowTrustedError||null;')
         if err:raise RuntimeError('trusted page init failed: '+err)
 
-        # Physical trusted typing in the child frame.
         frame=find(sid,'.row-office-input-frame');switch_frame(sid,frame)
         wait_js(sid,"return !!document.getElementById('row-office-ime');",True,10)
         execute(sid,"document.getElementById('row-office-ime').focus(); return document.activeElement.id;")
@@ -85,7 +84,6 @@ def main():
         time.sleep(.8)
         wave3='secondwave1234567890';key_actions(sid,wave3);expected+=wave3;wait_text(sid,expected)
 
-        # Host-safety: a trusted click on the parent control must remain focused.
         parent_frame(sid)
         execute(sid,"window.__hostClicks=0;document.getElementById('focus-sink').onclick=()=>window.__hostClicks++;return true;")
         sink=find(sid,'#focus-sink');click(sid,sink)
@@ -97,8 +95,8 @@ def main():
         if int(execute(sid,'return window.__hostClicks||0;') or 0)!=1:
             raise RuntimeError('trusted host control click did not complete')
 
-        # Explicitly return to Writer and continue trusted typing.
-        execute(sid,'window.__rowView.focus();return true;')
+        # Return the way a user does: physically click the Writer document layer.
+        writer=find(sid,'.row-office-document-layer');click(sid,writer)
         wait_js(sid,'return document.activeElement===window.__rowView.inputFrame && window.__rowView.inputFrame.contentDocument.activeElement===window.__rowView.ime;',True,5)
         switch_frame(sid,find(sid,'.row-office-input-frame'))
         key_actions(sid,'z');expected+='z';wait_text(sid,expected)
@@ -112,7 +110,7 @@ def main():
         if int(debug.get('commitsError',0))!=0:raise RuntimeError(f'commit errors: {debug!r}')
         if int(debug.get('commitsQueued',0))!=int(debug.get('commitsOk',-1)):
             raise RuntimeError(f'UI commits did not drain: {debug!r}')
-        print(json.dumps({'status':'pass','textLength':len(expected),'tail':expected[-24:],'stats':stats,'debug':{'queued':debug.get('commitsQueued'),'ok':debug.get('commitsOk'),'worker':f"{debug.get('workerPhase')}:{debug.get('workerCommand')}"}},ensure_ascii=False))
+        print(json.dumps({'status':'pass','textLength':len(expected),'tail':expected[-24:],'stats':stats,'debug':{'queued':debug.get('commitsQueued'),'ok':debug.get('commitsOk'),'post':f"{debug.get('clientPostCommand')}#{debug.get('clientPostId')}",'worker':f"{debug.get('workerPhase')}:{debug.get('workerCommand')}#{debug.get('workerId')}"}},ensure_ascii=False))
     finally:
         if sid:
             try:req('DELETE',f'/session/{sid}')
