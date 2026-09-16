@@ -33,6 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 row-office-browser/apply-input-render-fix-v2.py
           wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
           test -n "$wasm"
           old_root=$(dirname "$(dirname "$wasm")")
@@ -71,8 +72,8 @@ jobs:
           names = {x['name'] for x in p['log']}
           required = {
               'ready', 'odt-roundtrip', 'docx-roundtrip', 'text-input',
-              'lok-info', 'tile', 'view-render-contract',
-              'human-keyboard-fallback', 'dom-ime'
+              'lok-info', 'tile', 'lok-sync-caret', 'view-render-contract',
+              'dom-mouse-caret', 'human-keyboard-fallback', 'dom-ime'
           }
           missing = required - names
           assert not missing, f'missing acceptance probes: {sorted(missing)}'
