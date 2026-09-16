@@ -10,12 +10,13 @@ fi
 
 ROOT=$(cd "$1" && pwd)
 RESULT="$ROOT/row-acceptance-result.json"
+TRACE="$ROOT/row-acceptance-trace.log"
 HTTP_LOG="$ROOT/row-acceptance-http.log"
 CHROME_LOG="$ROOT/row-acceptance-chrome.log"
 TRUSTED_LOG="$ROOT/row-trusted-input.log"
 PORT=${ROW_ACCEPTANCE_PORT:-18765}
 TIMEOUT_SECONDS=${ROW_ACCEPTANCE_TIMEOUT_SECONDS:-180}
-rm -f "$RESULT" "$HTTP_LOG" "$CHROME_LOG" "$TRUSTED_LOG"
+rm -f "$RESULT" "$TRACE" "$HTTP_LOG" "$CHROME_LOG" "$TRUSTED_LOG"
 
 chrome=""
 for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
@@ -30,7 +31,7 @@ if [ -z "$chrome" ]; then
 fi
 
 SERVER_SCRIPT=$(mktemp)
-export ROOT RESULT PORT
+export ROOT RESULT TRACE PORT
 cat > "$SERVER_SCRIPT" <<'PY'
 import http.server
 import os
@@ -38,6 +39,7 @@ from pathlib import Path
 
 root = os.environ['ROOT']
 result = Path(os.environ['RESULT'])
+trace = Path(os.environ['TRACE'])
 port = int(os.environ['PORT'])
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -45,14 +47,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=root, **kwargs)
 
     def do_POST(self):
-        if self.path != '/__row_result__':
-            self.send_error(404)
-            return
         size = int(self.headers.get('content-length', '0'))
         body = self.rfile.read(size)
-        temp = result.with_suffix(result.suffix + '.tmp')
-        temp.write_bytes(body)
-        temp.replace(result)
+        if self.path == '/__row_result__':
+            temp = result.with_suffix(result.suffix + '.tmp')
+            temp.write_bytes(body)
+            temp.replace(result)
+        elif self.path == '/__row_trace__':
+            with trace.open('ab') as f:
+                f.write(body.rstrip(b'\r\n') + b'\n')
+        else:
+            self.send_error(404)
+            return
         self.send_response(204)
         self.end_headers()
 
@@ -109,7 +115,11 @@ done
 
 if [ ! -s "$RESULT" ]; then
   echo "Reborn Office browser acceptance timed out after ${TIMEOUT_SECONDS}s" >&2
+  echo "--- ROW acceptance trace ---" >&2
+  cat "$TRACE" >&2 || true
+  echo "--- Chrome log ---" >&2
   cat "$CHROME_LOG" >&2 || true
+  echo "--- HTTP log ---" >&2
   cat "$HTTP_LOG" >&2 || true
   exit 71
 fi
@@ -125,8 +135,6 @@ if data.get('status') != 'pass':
     raise SystemExit(72)
 PY
 
-# Synthetic DOM dispatches are not evidence that a physical keyboard works.
-# Require ChromeDriver and a second browser session that produces trusted events.
 if ! command -v chromedriver >/dev/null 2>&1; then
   echo "ChromeDriver is required for trusted keyboard acceptance" >&2
   exit 73
