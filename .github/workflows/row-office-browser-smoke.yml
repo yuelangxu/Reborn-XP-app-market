@@ -39,7 +39,14 @@ jobs:
           node --check row-office-browser/reborn-office.js
           node row-office-browser/test-reborn-vfs-save.js
           bash -n row-office-browser/prepare-runtime-tree.sh
+          bash -n row-office-browser/run-acceptance.sh
           bash -n row-office-lok/prepare_cjk_font.sh
+          ! grep -q -- '--virtual-time-budget' row-office-browser/run-acceptance.sh
+          grep -q '__row_result__' row-office-browser/acceptance.html
+          grep -q 'row-acceptance-result.json' row-office-browser/run-acceptance.sh
+          grep -q 'width: tile.cssWidth' row-office-browser/row-office-view.js
+          grep -q 'event.button === 1) return 4' row-office-browser/row-office-view.js
+          grep -q 'event.button === 2) return 2' row-office-browser/row-office-view.js
           bash -n row-office-port/build.sh
           python3 -m py_compile row-office-lok/integrate_bridge.py
           python3 -m py_compile row-office-lok/integrate_cjk_font.py
