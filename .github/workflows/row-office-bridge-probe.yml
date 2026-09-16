@@ -1,0 +1,107 @@
+name: Reborn Office bridge compile probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-bridge-probe]
+    paths:
+      - '.github/workflows/row-office-bridge-probe.yml'
+      - 'row-office-port/**'
+      - 'row-office-lok/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: row-office-bridge-probe
+  cancel-in-progress: true
+
+jobs:
+  compile-row-lok-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
+          df -h
+
+      - name: Checkout probe harness
+        uses: actions/checkout@v4
+        with:
+          path: harness
+          ref: row-office-bridge-probe
+
+      - name: Checkout pinned LibreOffice core
+        uses: actions/checkout@v4
+        with:
+          repository: LibreOffice/core
+          ref: 31eabe1e534a70a2b7d5c39eb31e56a75c17be3b
+          path: libreoffice
+          fetch-depth: 1
+
+      - name: Restore builder-compatible Python 3.12
+        id: python-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: row-python
+          key: row-python-3.12.13-allotropia-wasm-v1
+
+      - name: Bootstrap Python on cache miss
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        env:
+          PREFIX: ${{ github.workspace }}/row-python
+          SOURCE_ARCHIVE: ${{ github.workspace }}/Python-3.12.13.tgz
+        run: |
+          curl --fail --location --retry 3 \
+            https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz \
+            -o "$SOURCE_ARCHIVE"
+          echo '0816c4761c97ecdb3f50a3924de0a93fd78cb63ee8e6c04201ddfaedca500b0b  Python-3.12.13.tgz' | sha256sum -c -
+          bash harness/row-office-port/bootstrap_python.sh
+
+      - name: Restore LibreOffice external tarballs
+        uses: actions/cache/restore@v4
+        with:
+          path: lo-tarballs
+          key: row-lo-tarballs-bridge-probe-${{ github.run_id }}
+          restore-keys: |
+            row-lo-tarballs-core-31eabe1-v2-
+
+      - name: Compile only RowLokBridge.o
+        env:
+          SRC: ${{ github.workspace }}/libreoffice
+          BUILD: ${{ github.workspace }}/lo-build
+          TARBALLS: ${{ github.workspace }}/lo-tarballs
+          PORT: ${{ github.workspace }}/harness/row-office-port
+          HOST_PYTHON: ${{ github.workspace }}/row-python
+        run: |
+          set -euo pipefail
+          python3 harness/row-office-lok/integrate_bridge.py "$SRC"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('harness/row-office-port/build.sh')
+          text = path.read_text(encoding='utf-8')
+          old = 'CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make -rj2 2>&1 | tee -a row-build.log'
+          new = 'CC_FOR_BUILD=clang CXX_FOR_BUILD=clang++ ENABLE_EMSCRIPTEN_SINGLE_THREAD=TRUE make -rj2 /build/workdir/CxxObject/static/source/unoembindhelpers/RowLokBridge.o 2>&1 | tee -a row-build.log'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one full-build command, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          bash harness/row-office-port/build.sh
+          test -f lo-build/workdir/CxxObject/static/source/unoembindhelpers/RowLokBridge.o
+          ls -lh lo-build/workdir/CxxObject/static/source/unoembindhelpers/RowLokBridge.o
+          echo ROW_BRIDGE_COMPILE_PROBE_PASS
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: row-office-bridge-probe-evidence
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            libreoffice/row-patch-report.json
+            lo-build/config.log
+            lo-build/row-build.log
+            lo-build/row-build-summary.json
+            lo-build/workdir/CxxObject/static/source/unoembindhelpers/RowLokBridge.o
