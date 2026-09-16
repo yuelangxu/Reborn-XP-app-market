@@ -1,0 +1,229 @@
+name: Reborn Office runtime live probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-runtime-probe]
+    paths:
+      - '.github/workflows/row-office-runtime-live-probe.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download Run 28 evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: row-office-core-port-evidence
+          path: evidence
+          github-token: ${{ github.token }}
+          run-id: 35040735653
+
+      - name: Locate accepted runtime candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
+          test -n "$wasm"
+          root=$(dirname "$(dirname "$wasm")")
+          echo "ROW_RUNTIME_ROOT=$root" >> "$GITHUB_ENV"
+          echo "Runtime root: $root"
+          ls -lh "$root/runtime/soffice."* || true
+
+      - name: Install wall-clock diagnostic page and worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$ROW_RUNTIME_ROOT/diag-worker-loader.js" <<'EOF'
+          'use strict';
+          (() => {
+            const here = new URL('./', self.location.href);
+            const runtimeBase = new URL('./runtime/', here);
+            const zetaUrl = new URL('./vendor/zeta.js', here);
+            const bridgeUrl = new URL('./row-office-thread.js', here);
+            const emit = (kind, payload = {}) => self.postMessage({rowOffice: true, kind, ...payload});
+            let dependencyLast = null;
+            self.Module = {
+              ...(self.Module || {}),
+              uno_scripts: [zetaUrl.href, bridgeUrl.href],
+              locateFile(path) { return new URL(path, runtimeBase).href; },
+              preRun: [() => emit('diag-prerun')],
+              postRun: [() => emit('diag-postrun')],
+              onRuntimeInitialized() { emit('diag-runtime-initialized'); },
+              monitorRunDependencies(left) {
+                if (left !== dependencyLast) {
+                  dependencyLast = left;
+                  emit('diag-run-dependencies', {left});
+                }
+              },
+              print(text) { emit('stdout', {text: String(text)}); },
+              printErr(text) { emit('stderr', {text: String(text)}); },
+              onAbort(reason) { emit('fatal', {message: `LibreOffice WASM aborted: ${String(reason)}`}); }
+            };
+            emit('loader-start', {runtimeBase: runtimeBase.href});
+            try {
+              importScripts(new URL('soffice.js', runtimeBase).href);
+              emit('diag-importscripts-returned');
+            } catch (error) {
+              emit('fatal', {message: error?.message || String(error), stack: error?.stack || ''});
+              throw error;
+            }
+          })();
+          EOF
+
+          cat > "$ROW_RUNTIME_ROOT/diag.html" <<'EOF'
+          <!doctype html><meta charset="utf-8"><title>ROW live probe</title>
+          <pre id="out">starting</pre>
+          <script src="./row-office-client.js"></script>
+          <script>
+          'use strict';
+          (async () => {
+            const out = document.getElementById('out');
+            const events = [];
+            let client;
+            const started = performance.now();
+            const snapshot = (kind, extra = {}) => ({
+              kind, elapsedMs: Math.round(performance.now() - started),
+              events: events.slice(-120), ...extra
+            });
+            const post = (path, body) => fetch(path, {
+              method: 'POST', headers: {'content-type':'application/json'},
+              body: JSON.stringify(body)
+            }).catch(() => {});
+            const record = (kind, data = {}) => {
+              events.push({t: Math.round(performance.now() - started), kind, ...data});
+              if (events.length > 300) events.splice(0, events.length - 300);
+              out.textContent = JSON.stringify(snapshot('running'), null, 2);
+            };
+            const heartbeat = setInterval(() => post('/__row_progress__', snapshot('heartbeat')), 5000);
+            try {
+              client = new RowOfficeClient('./diag-worker-loader.js');
+              for (const kind of ['loader-start','diag-prerun','diag-postrun','diag-runtime-initialized','diag-importscripts-returned','diag-run-dependencies','stdout','stderr','fatal']) {
+                client.on(kind, (m) => record(kind, m));
+              }
+              record('client-created');
+              const ready = await client.ready;
+              record('ready', {ready});
+              if (ready.sharedMemory !== false) throw new Error('WASM memory is shared');
+              if (ready.lokBridge !== true) throw new Error('ROW LOK bridge is missing');
+
+              const marker = '你好 Reborn Office WASM ✓';
+              const odt = await client.roundTrip('odt', marker + ' ODT');
+              record('odt', {pass: odt.pass, bytes: odt.byteLength, reopened: odt.reopened});
+              if (!odt.pass || odt.byteLength <= 100) throw new Error('ODT round-trip failed');
+
+              const docx = await client.roundTrip('docx', marker + ' DOCX');
+              record('docx', {pass: docx.pass, bytes: docx.byteLength, reopened: docx.reopened});
+              if (!docx.pass || docx.byteLength <= 100) throw new Error('DOCX round-trip failed');
+
+              await client.newWriter();
+              await client.postTextInput(marker + ' IME');
+              const text = await client.readText();
+              record('text-input', text);
+              if (!text.text.includes(marker + ' IME')) throw new Error('LOK text input failed');
+
+              const info = await client.lokInfo();
+              record('lok-info', info);
+              if (!(info.widthTwips > 0 && info.heightTwips > 0)) throw new Error('LOK document size invalid');
+              const tile = await client.renderTile({
+                canvasWidth:128, canvasHeight:128, xTwips:0, yTwips:0,
+                widthTwips:Math.min(info.widthTwips,1920),
+                heightTwips:Math.min(info.heightTwips,1920)
+              });
+              const pixels = new Uint8Array(tile.rgba);
+              let nonZero = 0;
+              for (let i=0; i<pixels.length; i+=4) {
+                if (pixels[i] || pixels[i+1] || pixels[i+2] || pixels[i+3]) nonZero++;
+              }
+              record('tile', {bytes:pixels.byteLength, nonZero});
+              if (pixels.byteLength !== 65536 || nonZero <= 128) throw new Error('LOK tile failed');
+
+              const result = snapshot('pass');
+              out.textContent = JSON.stringify(result, null, 2);
+              await post('/__row_result__', result);
+            } catch (error) {
+              record('exception', {message:error?.message || String(error), stack:error?.stack || ''});
+              const result = snapshot('fail', {message:error?.message || String(error), stack:error?.stack || ''});
+              out.textContent = JSON.stringify(result, null, 2);
+              await post('/__row_result__', result);
+            } finally {
+              clearInterval(heartbeat);
+            }
+          })();
+          </script>
+          EOF
+
+      - name: Run real-time browser probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/live-probe"
+          mkdir -p "$OUT"
+          export ROW_RUNTIME_ROOT OUT
+          cat > "$OUT/server.py" <<'PY'
+          import http.server, os, pathlib
+          root = os.environ['ROW_RUNTIME_ROOT']
+          out = pathlib.Path(os.environ['OUT'])
+          class H(http.server.SimpleHTTPRequestHandler):
+              def __init__(self, *args, **kwargs):
+                  super().__init__(*args, directory=root, **kwargs)
+              def do_POST(self):
+                  n = int(self.headers.get('content-length', '0'))
+                  body = self.rfile.read(n)
+                  name = 'result.json' if self.path == '/__row_result__' else 'progress.json'
+                  (out / name).write_bytes(body)
+                  self.send_response(204); self.end_headers()
+          http.server.ThreadingHTTPServer(('127.0.0.1', 18766), H).serve_forever()
+          PY
+          python3 "$OUT/server.py" >"$OUT/http.log" 2>&1 &
+          server_pid=$!
+
+          chrome=''
+          for candidate in google-chrome google-chrome-stable chromium chromium-browser; do
+            if command -v "$candidate" >/dev/null 2>&1; then chrome=$(command -v "$candidate"); break; fi
+          done
+          test -n "$chrome"
+          "$chrome" --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
+            --enable-features=WebAssembly \
+            'http://127.0.0.1:18766/diag.html' \
+            >"$OUT/chrome.out" 2>"$OUT/chrome.err" &
+          chrome_pid=$!
+
+          for i in $(seq 1 120); do
+            if [ -s "$OUT/result.json" ]; then break; fi
+            if ! kill -0 "$chrome_pid" 2>/dev/null; then
+              echo "Chrome exited before result (iteration $i)" >&2
+              break
+            fi
+            sleep 5
+          done
+
+          kill "$chrome_pid" 2>/dev/null || true
+          kill "$server_pid" 2>/dev/null || true
+          wait "$chrome_pid" 2>/dev/null || true
+          wait "$server_pid" 2>/dev/null || true
+
+          echo '--- result ---'
+          cat "$OUT/result.json" 2>/dev/null || true
+          echo '--- last progress ---'
+          cat "$OUT/progress.json" 2>/dev/null || true
+          echo '--- HTTP ---'
+          cat "$OUT/http.log" 2>/dev/null || true
+          echo '--- Chrome stderr tail ---'
+          tail -n 200 "$OUT/chrome.err" 2>/dev/null || true
+
+          test -s "$OUT/result.json" || exit 72
+
+      - name: Upload live runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: row-office-run28-live-probe
+          retention-days: 14
+          if-no-files-found: warn
+          path: live-probe/
