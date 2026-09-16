@@ -15,15 +15,15 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - name: Download fully verified final candidate
+      - name: Download deterministic final candidate
         uses: actions/download-artifact@v4
         with:
-          name: RebornOfficeWasm-browser-native-final-candidate
+          name: RebornOfficeWasm-browser-native-deterministic-final
           path: final
           github-token: ${{ github.token }}
-          run-id: 35050858888
+          run-id: 35051909106
 
-      - name: Locate and verify final package digest
+      - name: Locate and verify deterministic package digest
         shell: bash
         run: |
           set -euo pipefail
@@ -36,6 +36,7 @@ jobs:
           expected=$(awk '{print $1}' "$sha_file")
           actual=$(sha256sum "$package" | awk '{print $1}')
           test "$actual" = "$expected"
+          test "$actual" = '7fde57f910f1856bd538359e4f1325a786e2a932eb85ed150bb61c064da432d1'
           echo "FINAL_PACKAGE=$package" >> "$GITHUB_ENV"
           echo "FINAL_SHA_FILE=$sha_file" >> "$GITHUB_ENV"
           echo "FINAL_ACCEPTANCE=$acceptance" >> "$GITHUB_ENV"
@@ -43,11 +44,11 @@ jobs:
           ls -lh "$package" "$sha_file" "$acceptance"
           echo "SHA256=$actual"
 
-      - name: Create prerelease and upload direct package asset
+      - name: Create deterministic prerelease and upload direct package asset
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: reborn-office-wasm-browser-native-candidate-20260916
-          TARGET: 968d2bc1d46f22d2bfbb29258fad3b2f22879fa6
+          TAG: reborn-office-wasm-browser-native-deterministic-20260916
+          TARGET: 9262ba897acaaaf112dc9c37268848d71418dbba
         shell: bash
         run: |
           set -euo pipefail
@@ -55,8 +56,8 @@ jobs:
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET" \
-              --title 'RebornOfficeWasm browser-native candidate · 2026-09-16' \
-              --notes 'Real LibreOffice Technology Writer compiled to browser WebAssembly. Single ordinary DedicatedWorker, no shared WASM memory requirement, no Docker/native backend/VNC. Browser acceptance passed ODT and DOCX round-trip, Unicode/IME text input, LibreOfficeKit geometry, and real tile rendering. Final Reborn XP host integration remains the real-machine gate.' \
+              --title 'RebornOfficeWasm browser-native deterministic candidate · 2026-09-16' \
+              --notes 'Real LibreOffice Technology Writer compiled to browser WebAssembly. Single ordinary DedicatedWorker, no shared WASM memory requirement, no Docker/native backend/VNC. Browser acceptance passed ODT and DOCX round-trip, Unicode/IME text input, LibreOfficeKit geometry, and real tile rendering. The same accepted runtime was packaged twice byte-for-byte identically; transient acceptance logs are excluded from the formal installation ZIP. Final Reborn XP host integration remains the real-machine gate.' \
               --prerelease
           fi
           gh release upload "$TAG" \
@@ -65,4 +66,18 @@ jobs:
             "$FINAL_ACCEPTANCE" \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,isPrerelease,assets
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url,tagName,isPrerelease,targetCommitish,assets
+
+      - name: Mark previous nondeterministic candidate superseded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_TAG: reborn-office-wasm-browser-native-candidate-20260916
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$OLD_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$OLD_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title 'SUPERSEDED · RebornOfficeWasm browser-native candidate · 2026-09-16' \
+              --notes 'Superseded by reborn-office-wasm-browser-native-deterministic-20260916. The older package included transient acceptance diagnostics, so its ZIP digest was not reproducible even though the LibreOffice runtime itself passed acceptance.'
+          fi
