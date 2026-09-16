@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 APP_DIR = "RebornOfficeWasm"
 INSTALL_PATH = "C:/Program Files/RebornOfficeWasm"
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
+TRANSIENT_RUNTIME_PREFIXES = ("row-acceptance-",)
 REQUIRED = (
     "runtime/soffice.js",
     "runtime/soffice.wasm",
@@ -113,9 +114,15 @@ def require_runtime(root: Path) -> None:
         raise SystemExit("runtime tree incomplete: " + ", ".join(missing))
 
 
+def is_transient_runtime_file(rel: Path) -> bool:
+    return any(rel.name.startswith(prefix) for prefix in TRANSIENT_RUNTIME_PREFIXES)
+
+
 def copy_runtime(src: Path, dst: Path) -> None:
     for path in sorted(p for p in src.rglob("*") if p.is_file()):
         rel = path.relative_to(src)
+        if is_transient_runtime_file(rel):
+            continue
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
@@ -209,6 +216,14 @@ def verify_zip(out_zip: Path) -> None:
         names = zf.namelist()
         if not names or names[0] != APP_DIR + "/":
             raise SystemExit("ZIP root directory entry is not first")
+        transient = [
+            name for name in names
+            if is_transient_runtime_file(PurePosixPath(name))
+        ]
+        if transient:
+            raise SystemExit(
+                "ZIP contains transient acceptance diagnostics: " + ", ".join(transient)
+            )
         seen_dirs: set[str] = set()
         for name in names:
             p = PurePosixPath(name.rstrip("/"))
