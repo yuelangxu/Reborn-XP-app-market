@@ -38,11 +38,12 @@ text = replace_once(
     text,
     "$(eval $(call gb_StaticLibrary_StaticLibrary,unoembind))\n\n",
     "$(eval $(call gb_StaticLibrary_StaticLibrary,unoembind))\n\n"
+    "$(eval $(call gb_StaticLibrary_use_external,unoembind,boost_headers))\n\n"
     "$(eval $(call gb_StaticLibrary_set_include,unoembind,\\\n"
     "    $$(INCLUDE) \\\n"
     "    -I$(SRCDIR)/desktop/inc \\\n"
     "))\n\n",
-    "unoembind include path",
+    "unoembind bridge build dependencies",
 )
 text = replace_once(
     text,
@@ -87,5 +88,6 @@ EM_JS(void, runUnoScriptUrls, (emscripten::EM_VAL handle), {
 
 print(f"ROW LOK bridge copied to {TARGET.relative_to(ROOT)}")
 print("ROW LOK bridge added to whole-archived unoembind static library")
+print("ROW LOK bridge declared its Boost header dependency")
 if UNO_INIT.is_file():
     print("ROW UNO scripts use synchronous importScripts() in the DedicatedWorker")
