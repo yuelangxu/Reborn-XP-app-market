@@ -18,4 +18,4 @@ jobs:
   handoff:
     runs-on: ubuntu-latest
     steps:
-      - run: echo 'Final delivery takes priority; Run 28 already proved the unchanged core at the same product commit.'
+      - run: echo 'Deterministic final candidate is published; stop the redundant rebuild of the unchanged LibreOffice core.'
