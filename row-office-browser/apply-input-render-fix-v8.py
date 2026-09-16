@@ -83,6 +83,7 @@ replace_once('row-office-view.js', '''    async mount() {
       this.focus();
       if (!this.debugTimer) {
 ''')
+replace_once('row-office-view.js', "      this.focusWatchdog = 0;\n", "")
 
 # A blur means the host/user moved focus. Respect it. The next explicit click on
 # Writer will activate the input frame again.
@@ -164,5 +165,9 @@ replace_once('row-office-view.js', '''      if (this.focusWatchdog) {
         this.focusWatchdog = 0;
       }
 ''', '')
+
+# Make the HUD identify the host-safe build explicitly.
+replace_once('row-office-view.js', "        version: 'v6-host-diag', active: false,\n",
+"        version: 'v8-host-safe', active: false,\n")
 
 print('applied ROW input/render fix v8 host-safe input dispatch')
