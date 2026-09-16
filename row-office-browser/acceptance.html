@@ -22,6 +22,16 @@
     if (!condition) throw new Error(message);
   }
 
+  async function report(result) {
+    try {
+      await fetch('/__row_result__', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify(result)
+      });
+    } catch (_) {}
+  }
+
   try {
     assert(typeof RowOfficeClient === 'function', 'RowOfficeClient is missing');
     client = new RowOfficeClient('./row-office-worker-loader.js');
@@ -74,6 +84,7 @@
     out.textContent = JSON.stringify(finalResult, null, 2);
     document.title = 'ROW_ACCEPTANCE_PASS';
     console.log('ROW_ACCEPTANCE_PASS', finalResult);
+    await report(finalResult);
   } catch (error) {
     const failure = {
       status: 'fail',
@@ -85,6 +96,7 @@
     out.textContent = JSON.stringify(failure, null, 2);
     document.title = 'ROW_ACCEPTANCE_FAIL';
     console.error('ROW_ACCEPTANCE_FAIL', failure);
+    await report(failure);
   } finally {
     if (client) client.terminate();
   }

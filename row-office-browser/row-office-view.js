@@ -401,7 +401,11 @@
         height: rect.height / this.twipsPerCssPx
       };
       for (const tile of this.tiles.values()) {
-        if (intersects(pxRect, tile)) tile.dirty = true;
+        const tileRect = {
+          x: tile.x, y: tile.y,
+          width: tile.cssWidth, height: tile.cssHeight
+        };
+        if (intersects(pxRect, tileRect)) tile.dirty = true;
       }
       this._scheduleVisible();
     }
@@ -495,13 +499,13 @@
     _mouseButtons(event, type) {
       if (type === LOK_MOUSEEVENT_MOUSEBUTTONDOWN || type === LOK_MOUSEEVENT_MOUSEBUTTONUP) {
         if (event.button === 0) return 1;
-        if (event.button === 1) return 2;
-        if (event.button === 2) return 4;
+        if (event.button === 1) return 4;
+        if (event.button === 2) return 2;
       }
       let value = 0;
       if (event.buttons & 1) value |= 1;
-      if (event.buttons & 4) value |= 2;
-      if (event.buttons & 2) value |= 4;
+      if (event.buttons & 2) value |= 2;
+      if (event.buttons & 4) value |= 4;
       return value;
     }
 
