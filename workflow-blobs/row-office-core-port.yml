@@ -1,0 +1,268 @@
+name: Reborn Office LibreOffice core port
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-core-port, row-office-core-port-prep]
+    paths:
+      - '.github/workflows/row-office-core-port.yml'
+      - 'row-office-port/**'
+      - 'row-office-lok/**'
+      - 'row-office-browser/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: row-office-core-port-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-writer-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc || true
+          df -h
+
+      - name: Checkout port harness
+        uses: actions/checkout@v4
+        with:
+          path: harness
+          ref: ${{ github.ref_name }}
+
+      - name: Checkout pinned LibreOffice core
+        uses: actions/checkout@v4
+        with:
+          repository: LibreOffice/core
+          ref: 31eabe1e534a70a2b7d5c39eb31e56a75c17be3b
+          path: libreoffice
+          fetch-depth: 1
+
+      - name: Restore builder-compatible Python 3.12
+        id: python-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: row-python
+          key: row-python-3.12.13-allotropia-wasm-v1
+
+      - name: Download verified CPython source
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 \
+            https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tgz \
+            -o Python-3.12.13.tgz
+          echo '0816c4761c97ecdb3f50a3924de0a93fd78cb63ee8e6c04201ddfaedca500b0b  Python-3.12.13.tgz' | sha256sum -c -
+
+      - name: Build Python inside the WASM builder
+        if: steps.python-cache.outputs.cache-hit != 'true'
+        env:
+          PREFIX: ${{ github.workspace }}/row-python
+          SOURCE_ARCHIVE: ${{ github.workspace }}/Python-3.12.13.tgz
+        run: bash harness/row-office-port/bootstrap_python.sh
+
+      - name: Save builder-compatible Python 3.12
+        if: steps.python-cache.outputs.cache-hit != 'true' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: row-python
+          key: row-python-3.12.13-allotropia-wasm-v1
+
+      - name: Probe builder Python
+        run: |
+          ./row-python/bin/python3 --version
+          ldd ./row-python/bin/python3 || true
+
+      - name: Restore LibreOffice ccache
+        id: lo-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: row-ccache
+          key: row-lo-ccache-v1-${{ github.run_id }}
+          restore-keys: |
+            row-lo-ccache-v1-
+
+      - name: Restore LibreOffice external tarballs
+        id: tarball-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: lo-tarballs
+          key: row-lo-tarballs-core-31eabe1-v2-${{ github.run_id }}
+          restore-keys: |
+            row-lo-tarballs-core-31eabe1-v2-
+
+      - name: Build no-pthread headless Writer
+        id: build
+        continue-on-error: true
+        env:
+          SRC: ${{ github.workspace }}/libreoffice
+          BUILD: ${{ github.workspace }}/lo-build
+          TARBALLS: ${{ github.workspace }}/lo-tarballs
+          PORT: ${{ github.workspace }}/harness/row-office-port
+          HOST_PYTHON: ${{ github.workspace }}/row-python
+          ROW_CCACHE_DIR: ${{ github.workspace }}/row-ccache
+        run: |
+          python3 harness/row-office-lok/integrate_bridge.py "$SRC"
+          python3 harness/row-office-lok/integrate_cjk_font.py "$SRC"
+          bash harness/row-office-lok/prepare_cjk_font.sh "$BUILD"
+          bash harness/row-office-port/build.sh
+
+      - name: Save LibreOffice ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: row-ccache
+          key: row-lo-ccache-v1-${{ github.run_id }}
+
+      - name: Save LibreOffice external tarballs
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: lo-tarballs
+          key: row-lo-tarballs-core-31eabe1-v2-${{ github.run_id }}
+
+      - name: Collect complete browser runtime
+        if: always()
+        run: |
+          rm -rf lo-build/ROW-runtime
+          mkdir -p lo-build/ROW-runtime
+          if [ -f lo-build/runtime-files.txt ]; then
+            while IFS= read -r file; do
+              [ -f "$file" ] || continue
+              rel=${file#"$GITHUB_WORKSPACE/lo-build/"}
+              mkdir -p "lo-build/ROW-runtime/$(dirname "$rel")"
+              cp "$file" "lo-build/ROW-runtime/$rel"
+            done < lo-build/runtime-files.txt
+          fi
+          find lo-build/ROW-runtime -type f -print0 \
+            | sort -z \
+            | xargs -0 -r sha256sum \
+            > lo-build/ROW-runtime-manifest.sha256
+          echo '--- collected runtime ---'
+          find lo-build/ROW-runtime -type f -print | sort
+          cat lo-build/ROW-runtime-manifest.sha256 || true
+
+      - name: Browser-native Writer acceptance
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          runtime_dir=''
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            if [ -f "$candidate/soffice.js" ] \
+              && [ -f "$candidate/soffice.wasm" ] \
+              && [ -f "$candidate/soffice.data" ] \
+              && [ -f "$candidate/soffice.data.js.metadata" ]; then
+              runtime_dir="$candidate"
+              break
+            fi
+          done < <(find lo-build -name soffice.wasm -printf '%h\n' | sort -u)
+          if [ -z "$runtime_dir" ]; then
+            echo 'No complete sibling LibreOffice browser runtime was found' >&2
+            cat lo-build/runtime-files.txt >&2 || true
+            exit 72
+          fi
+          echo "ROW complete runtime: $runtime_dir"
+          bash harness/row-office-browser/prepare-runtime-tree.sh \
+            "$runtime_dir" lo-build/ROW-browser-runtime
+          bash harness/row-office-browser/run-acceptance.sh \
+            lo-build/ROW-browser-runtime
+
+      - name: Build final Reborn XP package
+        if: ${{ success() && steps.build.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          rm -rf lo-build/ROW-release
+          mkdir -p lo-build/ROW-release
+          python3 harness/row-office-browser/build-reborn-package-v2.py \
+            lo-build/ROW-browser-runtime lo-build/ROW-release \
+            --source-sha "${GITHUB_SHA}" --accepted
+          sha256sum lo-build/ROW-release/RebornOfficeWasm-browser-native.zip \
+            > lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256
+          cat lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256
+
+      - name: Show first failure signals
+        if: always()
+        run: |
+          echo '--- patch report ---'
+          cat libreoffice/row-patch-report.json 2>/dev/null || true
+          echo '--- build summary ---'
+          cat lo-build/row-build-summary.json 2>/dev/null || true
+          echo '--- runtime files ---'
+          cat lo-build/runtime-files.txt 2>/dev/null || true
+          echo '--- soffice inspection ---'
+          cat lo-build/soffice-inspection.json 2>/dev/null || true
+          echo '--- soffice link externals ---'
+          cat lo-build/workdir/LinkTarget/Executable/soffice.js.d.externals 2>/dev/null || true
+          echo '--- soffice link libraries ---'
+          cat lo-build/workdir/LinkTarget/Executable/soffice.js.d.libraries 2>/dev/null || true
+          echo '--- soffice link statics ---'
+          cat lo-build/workdir/LinkTarget/Executable/soffice.js.d.statics 2>/dev/null || true
+          echo '--- browser acceptance ---'
+          cat lo-build/ROW-browser-runtime/row-acceptance-result.json 2>/dev/null \
+            || cat lo-build/ROW-browser-runtime/row-acceptance-dom.txt 2>/dev/null \
+            || true
+          echo '--- final release ---'
+          cat lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256 2>/dev/null || true
+          echo '--- tail ---'
+          tail -n 250 lo-build/row-build.log 2>/dev/null || true
+          echo '--- ccache ---'
+          du -sh row-ccache 2>/dev/null || true
+          echo '--- disk ---'
+          df -h
+
+      - name: Upload compiler evidence and browser runtime
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: row-office-core-port-evidence
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            libreoffice/row-patch-report.json
+            libreoffice/config.log
+            lo-build/config.log
+            lo-build/CONF-FOR-BUILD/config.log
+            lo-build/row-build.log
+            lo-build/row-build-summary.json
+            lo-build/runtime-files.txt
+            lo-build/soffice-inspection.json
+            lo-build/ROW-soffice.wasm
+            lo-build/workdir/LinkTarget/Executable/soffice.js.d.externals
+            lo-build/workdir/LinkTarget/Executable/soffice.js.d.libraries
+            lo-build/workdir/LinkTarget/Executable/soffice.js.d.statics
+            lo-build/ROW-runtime-manifest.sha256
+            lo-build/ROW-runtime/**
+            lo-build/ROW-browser-runtime/**
+
+      - name: Upload runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: row-office-runtime-diagnostics
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            lo-build/row-build-summary.json
+            lo-build/runtime-files.txt
+            lo-build/soffice-inspection.json
+            lo-build/ROW-browser-runtime/row-acceptance-result.json
+            lo-build/ROW-browser-runtime/row-acceptance-chrome.log
+            lo-build/ROW-browser-runtime/row-acceptance-http.log
+
+      - name: Upload accepted Reborn Office release
+        if: ${{ success() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: RebornOfficeWasm-browser-native
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            lo-build/ROW-release/RebornOfficeWasm-browser-native.zip
+            lo-build/ROW-release/RebornOfficeWasm-browser-native.zip.sha256
+
+      - name: Preserve failure state
+        if: steps.build.outcome == 'failure'
+        run: exit 1
