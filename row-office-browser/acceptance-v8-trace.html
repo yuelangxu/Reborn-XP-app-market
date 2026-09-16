@@ -8,7 +8,7 @@
 <script>
 'use strict';
 (async()=>{
-  const out=document.getElementById('result'),log=[]; let client,view;
+  const out=document.getElementById('result'),log=[]; let client,view,heartbeat=0;
   const rec=(name,value)=>{log.push({name,value});out.textContent=JSON.stringify({status:'running',log},null,2)};
   const ok=(c,m)=>{if(!c)throw new Error(m)};
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -19,6 +19,7 @@
     const snap={stage,t:Math.round(performance.now()),q:d.commitsQueued,ok:d.commitsOk,err:d.commitsError,workerPhase:d.workerPhase,workerCommand:d.workerCommand,workerId:d.workerId,active:view?view.active:null,...extra};
     try{await fetch('/__row_trace__',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(snap)})}catch(_){}
   }
+  heartbeat=setInterval(()=>{trace('heartbeat')},500);
   try{
     await trace('boot');
     client=new RowOfficeClient('./row-office-worker-loader.js');
@@ -103,6 +104,6 @@
     await sleep(120);ok(selectionCalls===0,'outside-page click reached selection backend');rec('outside-page-guard',{backendSelectionCalls:selectionCalls}); await trace('outside-guard-ok');
 
     view.destroy();view=null;const result={status:'pass',marker,log};out.dataset.status='pass';out.textContent=JSON.stringify(result,null,2);document.title='ROW_ACCEPTANCE_PASS';await trace('pass');await report(result);
-  }catch(error){await trace('fail',{message:error?.message||String(error)});const result={status:'fail',message:error?.message||String(error),stack:error?.stack||'',log};out.dataset.status='fail';out.textContent=JSON.stringify(result,null,2);document.title='ROW_ACCEPTANCE_FAIL';await report(result)}finally{if(view)view.destroy();if(client)client.terminate()}
+  }catch(error){await trace('fail',{message:error?.message||String(error)});const result={status:'fail',message:error?.message||String(error),stack:error?.stack||'',log};out.dataset.status='fail';out.textContent=JSON.stringify(result,null,2);document.title='ROW_ACCEPTANCE_FAIL';await report(result)}finally{if(heartbeat)clearInterval(heartbeat);if(view)view.destroy();if(client)client.terminate()}
 })();
 </script>
