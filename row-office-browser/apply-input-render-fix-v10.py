@@ -41,7 +41,7 @@ replace_once('row-office-thread.js',
     emit('ready', {
 """)
 
-# Surface heartbeat state in the existing HUD and trace snapshots.
+# Surface heartbeat state in the existing HUD.
 replace_once('row-office-view.js',
 """        workerPhase: '-', workerCommand: '-', workerId: 0,
         clientPostCommand: '-', clientPostId: 0,
@@ -85,5 +85,10 @@ replace_once('row-office-view.js',
       if (this.offWorkerHeartbeat) this.offWorkerHeartbeat();
       if (this.offClientRpcDebug) this.offClientRpcDebug();
 """)
+
+# Record Worker heartbeat count in the exact same freeze trace used since v8.
+replace_once('acceptance-v8-trace.html',
+"""workerPhase:d.workerPhase,workerCommand:d.workerCommand,workerId:d.workerId,active:view?view.active:null,...extra""",
+"""workerPhase:d.workerPhase,workerCommand:d.workerCommand,workerId:d.workerId,workerHeartbeat:d.workerHeartbeat,active:view?view.active:null,...extra""")
 
 print('applied ROW v10 Worker message-entry and heartbeat diagnostics')
