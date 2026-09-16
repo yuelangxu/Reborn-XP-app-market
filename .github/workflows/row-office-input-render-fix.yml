@@ -35,6 +35,7 @@ jobs:
           set -euo pipefail
           python3 row-office-browser/apply-input-render-fix-v2.py
           python3 row-office-browser/apply-input-render-fix-v3.py
+          python3 row-office-browser/apply-input-render-fix-v4.py
           wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
           test -n "$wasm"
           old_root=$(dirname "$(dirname "$wasm")")
@@ -74,7 +75,8 @@ jobs:
           required = {
               'ready', 'odt-roundtrip', 'docx-roundtrip',
               'lok-info', 'tile', 'lok-sync-caret', 'view-render-contract',
-              'isolated-input-frame', 'iframe-keyboard', 'iframe-ime',
+              'sustained-worker-input', 'isolated-input-frame', 'iframe-keyboard',
+              'sustained-iframe-input', 'focus-watchdog', 'repeated-iframe-ime',
               'outside-page-guard'
           }
           missing = required - names
