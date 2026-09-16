@@ -19,7 +19,7 @@ jobs:
       - name: Checkout final product harness
         uses: actions/checkout@v4
         with:
-          ref: 968d2bc1d46f22d2bfbb29258fad3b2f22879fa6
+          ref: 9262ba897acaaaf112dc9c37268848d71418dbba
           path: product
           fetch-depth: 1
 
@@ -38,7 +38,7 @@ jobs:
           wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
           test -n "$wasm"
           old_root=$(dirname "$(dirname "$wasm")")
-          rm -rf current-runtime final-release
+          rm -rf current-runtime final-release-a final-release-b
           cp -a "$old_root" current-runtime
 
           for file in \
@@ -66,33 +66,47 @@ jobs:
           ROW_ACCEPTANCE_TIMEOUT_SECONDS=180 \
             bash product/row-office-browser/run-acceptance.sh current-runtime
           cat current-runtime/row-acceptance-result.json
+          test -s current-runtime/row-acceptance-result.json
+          test -s current-runtime/row-acceptance-http.log
 
-      - name: Build deterministic Reborn XP package
+      - name: Build same real runtime twice and require identical ZIPs
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p final-release
-          python3 product/row-office-browser/build-reborn-package-v2.py \
-            current-runtime final-release \
-            --source-sha 968d2bc1d46f22d2bfbb29258fad3b2f22879fa6 \
-            --accepted
-          sha256sum final-release/RebornOfficeWasm-browser-native.zip \
-            > final-release/RebornOfficeWasm-browser-native.zip.sha256
-          cat final-release/RebornOfficeWasm-browser-native.zip.sha256
+          mkdir -p final-release-a final-release-b
+          for out in final-release-a final-release-b; do
+            python3 product/row-office-browser/build-reborn-package-v2.py \
+              current-runtime "$out" \
+              --source-sha 9262ba897acaaaf112dc9c37268848d71418dbba \
+              --accepted
+          done
+          sha_a=$(sha256sum final-release-a/RebornOfficeWasm-browser-native.zip | awk '{print $1}')
+          sha_b=$(sha256sum final-release-b/RebornOfficeWasm-browser-native.zip | awk '{print $1}')
+          echo "package A: $sha_a"
+          echo "package B: $sha_b"
+          test "$sha_a" = "$sha_b"
+          cmp -s \
+            final-release-a/RebornOfficeWasm-browser-native.zip \
+            final-release-b/RebornOfficeWasm-browser-native.zip
+          sha256sum final-release-a/RebornOfficeWasm-browser-native.zip \
+            > final-release-a/RebornOfficeWasm-browser-native.zip.sha256
 
-      - name: Verify ZIP structure and release metadata
+      - name: Verify deterministic ZIP structure and release metadata
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import json, zipfile
           from pathlib import PurePosixPath
-          path = 'final-release/RebornOfficeWasm-browser-native.zip'
+          path = 'final-release-a/RebornOfficeWasm-browser-native.zip'
           with zipfile.ZipFile(path) as z:
               bad = z.testzip()
               if bad is not None:
                   raise SystemExit(f'CRC failure: {bad}')
               names = z.namelist()
+              transient = [n for n in names if PurePosixPath(n).name.startswith('row-acceptance-')]
+              if transient:
+                  raise SystemExit('transient acceptance diagnostics leaked into release: ' + ', '.join(transient))
               required = [
                   'RebornOfficeWasm/',
                   'RebornOfficeWasm/runtime/',
@@ -119,7 +133,7 @@ jobs:
               release = json.loads(z.read('RebornOfficeWasm/release.json'))
               if not release.get('browserAcceptancePassed'):
                   raise SystemExit('release.json does not record browser acceptance')
-              if release.get('sourceCommit') != '968d2bc1d46f22d2bfbb29258fad3b2f22879fa6':
+              if release.get('sourceCommit') != '9262ba897acaaaf112dc9c37268848d71418dbba':
                   raise SystemExit(f'unexpected sourceCommit: {release.get("sourceCommit")}')
               if release.get('sharedMemoryRequired') is not False:
                   raise SystemExit('release.json unexpectedly requires shared memory')
@@ -133,19 +147,20 @@ jobs:
                   'wasmBytes': info.file_size,
                   'sourceCommit': release.get('sourceCommit'),
                   'browserAcceptancePassed': release.get('browserAcceptancePassed'),
-                  'sharedMemoryRequired': release.get('sharedMemoryRequired')
+                  'sharedMemoryRequired': release.get('sharedMemoryRequired'),
+                  'transientAcceptanceMembers': transient,
               }, indent=2))
           PY
 
-      - name: Upload final reusable candidate
+      - name: Upload deterministic final candidate
         uses: actions/upload-artifact@v4
         with:
-          name: RebornOfficeWasm-browser-native-final-candidate
+          name: RebornOfficeWasm-browser-native-deterministic-final
           retention-days: 30
           if-no-files-found: error
           path: |
-            final-release/RebornOfficeWasm-browser-native.zip
-            final-release/RebornOfficeWasm-browser-native.zip.sha256
+            final-release-a/RebornOfficeWasm-browser-native.zip
+            final-release-a/RebornOfficeWasm-browser-native.zip.sha256
             current-runtime/row-acceptance-result.json
             current-runtime/row-acceptance-chrome.log
             current-runtime/row-acceptance-http.log
