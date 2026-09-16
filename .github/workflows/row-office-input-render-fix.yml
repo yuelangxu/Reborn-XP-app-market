@@ -38,6 +38,7 @@ jobs:
           python3 row-office-browser/apply-input-render-fix-v4.py
           python3 row-office-browser/apply-input-render-fix-v5.py
           python3 row-office-browser/apply-input-render-fix-v6.py
+          python3 row-office-browser/apply-input-render-fix-v6b.py
           wasm=$(find evidence -type f -path '*/ROW-browser-runtime/runtime/soffice.wasm' -print -quit)
           test -n "$wasm"
           old_root=$(dirname "$(dirname "$wasm")")
