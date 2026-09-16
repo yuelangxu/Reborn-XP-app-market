@@ -45,8 +45,6 @@
     record('lok-sync-caret',{text:caretPlacement});
     assert(caretPlacement !== 'ABCDX' && caretPlacement.includes('X'),'Synchronous caret placement did not alter insertion point');
 
-    // Stress the committed-text backend itself. This used to go through the
-    // stateful VCL ExtTextInput path and could stop accepting text after a few commits.
     await client.newWriter();
     const directStress = 'abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     for (const ch of directStress) await client.postTextInput(ch);
@@ -96,7 +94,6 @@
     assert(parentKeyHits===0,'parent window observed child-frame keydown');
     record('iframe-keyboard',{text:typed,parentKeyHits});
 
-    // Reproduce the user's long-running session: dozens of sequential commits.
     const sustained = 'abcdefghijklmnopqrstuvwxyz0123456789';
     for (const ch of sustained) {
       view.ime.dispatchEvent(new KeyboardEvent('keydown',{key:ch,code:'Key'+ch.toUpperCase(),bubbles:true,cancelable:true}));
@@ -108,8 +105,6 @@
     assert(parentKeyHits===0,'parent window observed sustained child-frame keydown');
     record('sustained-iframe-input',{length:sustainedText.length,text:sustainedText,parentKeyHits});
 
-    // Steal focus from the child without clicking outside the Writer. The watchdog
-    // must recover both the iframe and its textarea before more input is sent.
     const sink = document.createElement('button'); sink.textContent='focus-sink'; document.body.appendChild(sink); sink.focus();
     assert(document.activeElement===sink,'could not steal focus for watchdog test');
     await waitFor(()=>document.activeElement===view.inputFrame && view.inputFrame.contentDocument.activeElement===view.ime,'focus watchdog did not recover isolated editor',3000);
@@ -128,16 +123,22 @@
     assert(parentBeforeHits===0,'parent window observed child-frame beforeinput');
     record('repeated-iframe-ime',{tail:imeText.slice(-20),parentBeforeHits});
 
-    const beforeLeft=view.cursor.style.left, beforeTop=view.cursor.style.top;
+    // Validate the page hit-test directly and make sure an outside click never
+    // invokes the Writer selection backend. Visual caret coordinates may change
+    // later from delayed LibreOffice callbacks, so they are not a reliable oracle.
     const docRect=view.documentLayer.getBoundingClientRect();
     const outsideX = page.left + 50;
     const outsideY = Math.max(docRect.top + 1, page.top - 8);
+    assert(view._eventDocPoint({clientX:outsideX,clientY:outsideY})===null,'outside-page point passed Writer page hit-test');
+    let outsideSelectionCalls = 0;
+    const realSetSelection = client.setLokTextSelection.bind(client);
+    client.setLokTextSelection = (...args) => { outsideSelectionCalls++; return realSetSelection(...args); };
     const outsideTarget = document.elementFromPoint(outsideX,outsideY) || view.documentLayer;
     outsideTarget.dispatchEvent(new PointerEvent('pointerdown',{pointerId:8,pointerType:'mouse',button:0,buttons:1,clientX:outsideX,clientY:outsideY,bubbles:true,cancelable:true}));
     outsideTarget.dispatchEvent(new PointerEvent('pointerup',{pointerId:8,pointerType:'mouse',button:0,buttons:0,clientX:outsideX,clientY:outsideY,bubbles:true,cancelable:true}));
     await sleep(120);
-    assert(view.cursor.style.left===beforeLeft && view.cursor.style.top===beforeTop,'outside-page click moved caret');
-    record('outside-page-guard',{left:beforeLeft,top:beforeTop});
+    assert(outsideSelectionCalls===0,'outside-page click reached Writer selection backend');
+    record('outside-page-guard',{backendSelectionCalls:outsideSelectionCalls});
 
     window.removeEventListener('keydown',blockKey,true); window.removeEventListener('beforeinput',blockBefore,true);
     view.destroy(); view=null;
