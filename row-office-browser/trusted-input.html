@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ROW trusted keyboard probe</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden}
+#surface{position:absolute;inset:0;background:#808080}
+#focus-sink{position:fixed;right:0;top:0;width:20px;height:20px}
+</style>
+<div id="surface"></div><button id="focus-sink">x</button>
+<script src="./row-office-client.js"></script>
+<script src="./row-office-view.js"></script>
+<script>
+'use strict';
+(async()=>{
+  try {
+    const client=new RowOfficeClient('./row-office-worker-loader.js');
+    await client.ready;
+    await client.newWriter();
+    const view=new RowOfficeCanvasView(client,document.getElementById('surface'),{tileCss:256});
+    await view.mount();
+    const stats={trustedKeydown:0,trustedBeforeInput:0,trustedInput:0,trustedCompositionStart:0,trustedCompositionEnd:0};
+    view.inputWindow.addEventListener('keydown',e=>{if(e.isTrusted)stats.trustedKeydown++},true);
+    view.ime.addEventListener('beforeinput',e=>{if(e.isTrusted)stats.trustedBeforeInput++},true);
+    view.ime.addEventListener('input',e=>{if(e.isTrusted)stats.trustedInput++},true);
+    view.ime.addEventListener('compositionstart',e=>{if(e.isTrusted)stats.trustedCompositionStart++},true);
+    view.ime.addEventListener('compositionend',e=>{if(e.isTrusted)stats.trustedCompositionEnd++},true);
+    window.__rowClient=client;
+    window.__rowView=view;
+    window.__rowTrustedStats=stats;
+    window.__rowTrustedReady=true;
+    document.title='ROW_TRUSTED_READY';
+  } catch (e) {
+    window.__rowTrustedError=String(e&&e.stack||e);
+    document.title='ROW_TRUSTED_FAIL';
+  }
+})();
+</script>
