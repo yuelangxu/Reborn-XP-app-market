@@ -1,0 +1,44 @@
+name: Publish staged workflow blobs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [row-office-runtime-probe]
+    paths:
+      - '.github/workflows/row-office-publish-workflow-blobs.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout temporary blob branch
+        uses: actions/checkout@v4
+        with:
+          ref: row-office-workflow-blobs
+          fetch-depth: 0
+
+      - name: Download validated workflow artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: row-office-staged-workflows
+          path: staged
+          github-token: ${{ github.token }}
+          run-id: 35050164057
+
+      - name: Publish workflow bytes at ordinary paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p workflow-blobs
+          cp staged/row-office-browser-smoke.yml workflow-blobs/row-office-browser-smoke.yml
+          cp staged/row-office-core-port.yml workflow-blobs/row-office-core-port.yml
+          git config user.name 'ROW Workflow Blob Bot'
+          git config user.email 'row-workflow-blob@users.noreply.github.com'
+          git add workflow-blobs/
+          git commit -m 'Stage validated workflow blob payloads'
+          git push origin HEAD:row-office-workflow-blobs
+          echo "BLOB_COMMIT=$(git rev-parse HEAD)"
